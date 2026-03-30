@@ -1,0 +1,305 @@
+package io.github.ganyuke.peoplehunt.command;
+
+import io.github.ganyuke.peoplehunt.game.CompassService;
+import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
+import io.github.ganyuke.peoplehunt.game.KitService;
+import io.github.ganyuke.peoplehunt.game.MatchManager;
+import io.github.ganyuke.peoplehunt.report.ReportModels.IndexEntry;
+import io.github.ganyuke.peoplehunt.report.ReportService;
+import io.github.ganyuke.peoplehunt.report.ViewerAssets;
+import io.github.ganyuke.peoplehunt.util.SelectorUtil;
+import io.github.ganyuke.peoplehunt.util.Text;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
+import org.bukkit.entity.Player;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
+    private final MatchManager matchManager;
+    private final CompassService compassService;
+    private final KitService kitService;
+    private final ReportService reportService;
+    private final ViewerAssets viewerAssets;
+
+    public PeopleHuntCommand(MatchManager matchManager, CompassService compassService, KitService kitService, ReportService reportService, ViewerAssets viewerAssets) {
+        this.matchManager = matchManager;
+        this.compassService = compassService;
+        this.kitService = kitService;
+        this.reportService = reportService;
+        this.viewerAssets = viewerAssets;
+    }
+
+    @Override
+    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
+        String subcommand = args.length == 0 ? "status" : args[0].toLowerCase();
+        try {
+            if (subcommand.equals("portal")) {
+                return handlePortal(sender);
+            }
+            if (!isAdmin(sender)) {
+                sender.sendMessage(Component.text("You do not have permission to use this command.", NamedTextColor.RED));
+                return true;
+            }
+            return switch (subcommand) {
+                case "start" -> handleStart(sender);
+                case "stop" -> handleStop(sender);
+                case "prime" -> handlePrime(sender, args);
+                case "prepare" -> handlePrepare(sender);
+                case "runner" -> handleRunner(sender, args);
+                case "hunter" -> handleHunter(sender, args);
+                case "status" -> handleStatus(sender);
+                case "surround" -> handleSurround(sender, args);
+                case "compass" -> handleCompass(sender, args);
+                case "kit" -> handleKit(sender, args);
+                case "keepinventory", "keepinv" -> handleKeepInventory(sender, args);
+                case "aar" -> handleAar(sender, args);
+                default -> {
+                    sender.sendMessage(Component.text("Unknown subcommand.", NamedTextColor.RED));
+                    yield true;
+                }
+            };
+        } catch (IllegalStateException exception) {
+            sender.sendMessage(Component.text(exception.getMessage(), NamedTextColor.RED));
+            return true;
+        } catch (IllegalArgumentException exception) {
+            sender.sendMessage(Component.text("Invalid argument: " + exception.getMessage(), NamedTextColor.RED));
+            return true;
+        } catch (IOException exception) {
+            sender.sendMessage(Component.text("I/O error: " + exception.getMessage(), NamedTextColor.RED));
+            return true;
+        }
+    }
+
+    private boolean handleStart(CommandSender sender) throws IOException {
+        matchManager.startNow();
+        sender.sendMessage(Component.text("Match started.", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleStop(CommandSender sender) throws IOException {
+        matchManager.stopInconclusive();
+        sender.sendMessage(Component.text("Match stopped.", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handlePrime(CommandSender sender, String[] args) {
+        Boolean keepFull = args.length >= 2 ? Boolean.parseBoolean(args[1]) : null;
+        matchManager.prime(keepFull);
+        sender.sendMessage(Component.text("Prime enabled. Match will start when the runner moves.", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handlePrepare(CommandSender sender) {
+        matchManager.prepare(true);
+        sender.sendMessage(Component.text("Prepared participants.", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleRunner(CommandSender sender, String[] args) {
+        List<Player> targets = args.length >= 2 ? SelectorUtil.resolvePlayers(sender, args[1]) : SelectorUtil.resolvePlayers(sender, null);
+        if (targets.isEmpty()) {
+            sender.sendMessage(Component.text("No player matched.", NamedTextColor.RED));
+            return true;
+        }
+        Player player = targets.get(0);
+        boolean set = matchManager.toggleRunner(player.getUniqueId());
+        sender.sendMessage(Component.text((set ? "Runner set to " : "Runner unset: ") + player.getName(), NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleHunter(CommandSender sender, String[] args) {
+        List<Player> targets = args.length >= 2 ? SelectorUtil.resolvePlayers(sender, args[1]) : SelectorUtil.resolvePlayers(sender, null);
+        if (targets.isEmpty()) {
+            sender.sendMessage(Component.text("No players matched.", NamedTextColor.RED));
+            return true;
+        }
+        int added = 0;
+        int removed = 0;
+        for (Player player : targets) {
+            if (player.getUniqueId().equals(matchManager.selectedRunnerUuid())) {
+                continue;
+            }
+            boolean wasExplicit = matchManager.explicitHunters().contains(player.getUniqueId());
+            boolean nowSelected = matchManager.toggleHunter(player.getUniqueId());
+            if (nowSelected && !wasExplicit) {
+                added++;
+            } else if (!nowSelected && wasExplicit) {
+                removed++;
+            }
+        }
+        sender.sendMessage(Component.text("Hunters updated. Added: " + added + ", removed: " + removed, NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleStatus(CommandSender sender) {
+        sender.sendMessage(matchManager.buildStatusComponent());
+        return true;
+    }
+
+    private boolean handleSurround(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(Component.text("Usage: /peoplehunt surround <min-radius> [max-radius]", NamedTextColor.RED));
+            return true;
+        }
+        double min = Double.parseDouble(args[1]);
+        Double max = args.length >= 3 ? Double.parseDouble(args[2]) : null;
+        matchManager.surroundHunters(min, max);
+        sender.sendMessage(Component.text("Hunters positioned around the runner.", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleCompass(CommandSender sender, String[] args) {
+        List<Player> targets = args.length >= 2 ? SelectorUtil.resolvePlayers(sender, args[1]) : SelectorUtil.resolvePlayers(sender, null);
+        if (targets.isEmpty()) {
+            sender.sendMessage(Component.text("No target players matched.", NamedTextColor.RED));
+            return true;
+        }
+        compassService.giveCompass(targets);
+        sender.sendMessage(Component.text("Compass given to " + targets.size() + " player(s).", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleKit(CommandSender sender, String[] args) throws IOException {
+        if (args.length < 3) {
+            sender.sendMessage(Component.text("Usage: /peoplehunt kit <set|delete> <identifier>", NamedTextColor.RED));
+            return true;
+        }
+        String action = args[1].toLowerCase();
+        String identifier = args[2];
+        switch (action) {
+            case "set" -> {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(Component.text("Only a player can save a kit from inventory.", NamedTextColor.RED));
+                    return true;
+                }
+                kitService.saveKit(identifier, player);
+                matchManager.setActiveKitId(identifier);
+                sender.sendMessage(Component.text("Saved and selected kit '" + identifier + "'.", NamedTextColor.GREEN));
+            }
+            case "delete" -> {
+                boolean removed = kitService.deleteKit(identifier);
+                if (removed && identifier.equals(matchManager.activeKitId())) {
+                    matchManager.setActiveKitId(null);
+                }
+                sender.sendMessage(Component.text(removed ? "Deleted kit '" + identifier + "'." : "Kit not found.", removed ? NamedTextColor.GREEN : NamedTextColor.RED));
+            }
+            default -> sender.sendMessage(Component.text("Unknown kit action.", NamedTextColor.RED));
+        }
+        return true;
+    }
+
+    private boolean handleKeepInventory(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(Component.text("Usage: /peoplehunt keepinventory <none|kit|all>", NamedTextColor.RED));
+            return true;
+        }
+        KeepInventoryMode mode = KeepInventoryMode.valueOf(args[1].toUpperCase(java.util.Locale.ROOT));
+        if (mode == KeepInventoryMode.INHERIT) {
+            sender.sendMessage(Component.text("INHERIT is only valid inside deathstreak config tiers.", NamedTextColor.RED));
+            return true;
+        }
+        matchManager.setKeepInventoryMode(mode);
+        sender.sendMessage(Component.text("Keep inventory mode set to " + mode + '.', NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleAar(CommandSender sender, String[] args) throws IOException {
+        if (args.length < 2) {
+            sender.sendMessage(Component.text("Usage: /peoplehunt aar <list|export>", NamedTextColor.RED));
+            return true;
+        }
+        String action = args[1].toLowerCase();
+        return switch (action) {
+            case "list" -> handleAarList(sender);
+            case "export" -> handleAarExport(sender, args);
+            default -> {
+                sender.sendMessage(Component.text("Unknown aar action.", NamedTextColor.RED));
+                yield true;
+            }
+        };
+    }
+
+    private boolean handleAarList(CommandSender sender) {
+        List<IndexEntry> entries = reportService.listReports();
+        if (entries.isEmpty()) {
+            sender.sendMessage(Component.text("No reports found.", NamedTextColor.RED));
+            return true;
+        }
+        sender.sendMessage(Component.text("Reports:", NamedTextColor.GOLD));
+        for (IndexEntry entry : entries) {
+            Component line = Component.text(entry.reportId().toString(), NamedTextColor.AQUA)
+                    .hoverEvent(HoverEvent.showText(Component.text("Runner UUID: " + entry.runnerUuid(), NamedTextColor.GRAY)))
+                    .append(Component.text(" — " + entry.runnerName() + " — " + entry.outcome() + " — " + Text.formatTimestamp(entry.endedAtEpochMillis()), NamedTextColor.GRAY));
+            sender.sendMessage(line);
+        }
+        return true;
+    }
+
+    private boolean handleAarExport(CommandSender sender, String[] args) throws IOException {
+        UUID reportId = args.length >= 3 ? UUID.fromString(args[2]) : reportService.latestReportId();
+        if (reportId == null) {
+            sender.sendMessage(Component.text("No finished report is available.", NamedTextColor.RED));
+            return true;
+        }
+        Path export = reportService.export(reportId, viewerAssets.render("LOCAL_EXPORT"));
+        sender.sendMessage(Component.text("Exported report to " + export.getFileName(), NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handlePortal(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("Only players can use this prompt.", NamedTextColor.RED));
+            return true;
+        }
+        Location target = matchManager.consumeEndPortalPrompt(player.getUniqueId()).orElse(null);
+        if (target == null) {
+            player.sendMessage(Component.text("No portal prompt is pending.", NamedTextColor.RED));
+            return true;
+        }
+        player.teleport(target.clone().add(0.5, 0.0, 0.5));
+        player.sendMessage(Component.text("Teleported to the runner's last End Portal.", NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean isAdmin(CommandSender sender) {
+        return sender.hasPermission("peoplehunt.admin") || sender.isOp();
+    }
+
+    @Override
+    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
+        if (args.length == 1) {
+            return List.of("start", "stop", "prime", "prepare", "runner", "hunter", "status", "surround", "compass", "kit", "keepinventory", "aar", "portal");
+        }
+        if (args.length == 2) {
+            return switch (args[0].toLowerCase()) {
+                case "prime" -> List.of("true", "false");
+                case "runner", "hunter", "compass" -> List.of("@s", "@p", "@a");
+                case "kit" -> List.of("set", "delete");
+                case "keepinventory", "keepinv" -> List.of("none", "kit", "all");
+                case "aar" -> List.of("list", "export");
+                default -> List.of();
+            };
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("aar") && args[1].equalsIgnoreCase("export")) {
+            return reportService.listReports().stream().map(entry -> entry.reportId().toString()).toList();
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("kit") && args[1].equalsIgnoreCase("delete")) {
+            return new ArrayList<>(kitService.identifiers());
+        }
+        return List.of();
+    }
+}

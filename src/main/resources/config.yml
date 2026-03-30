@@ -1,77 +1,69 @@
-messages:
-  prefix: "&6[Manhunt]&r "
-
-game:
-  freeze-during-prime: false
-  start-on-runner-move: true
-  quit-as-hunter-win: true
-  auto-give-compasses-on-start: true
-  simultaneous-end-policy: FIRST_EVENT
-
+match:
+  elapsed-announcement-minutes: 30
+  prime:
+    keep-players-full: true
+  player-path-sample-interval-ticks: 20
+  auto-spectate-new-joins: true
 compass:
+  update-interval-ticks: 10
+  dimension-mode: LAST_KNOWN
+  item:
+    name: '<light_purple>Hunter Compass'
+    lore: []
+kit:
+  apply-on-start: true
+end-portal-respawn:
   enabled: true
-  refresh-ticks: 40
-  minimum-target-change-distance: 8.0
-  mode: PORTAL_ANCHOR
-  title: "&bRunner Tracker"
-  lore:
-    - "&7Updates on a rougher cadence"
-    - "&7to keep the hunt immersive."
-
-surround:
-  default-radius: 8
-  min-radius: 4
-  max-radius: 32
-  safe-search-radius: 6
-  safe-search-vertical: 8
-
-notifications:
-  enabled: true
-  check-ticks: 100
-  interval-minutes: 30
-
-analytics:
-  enabled: true
-  folder: analytics
-  sample-distance: 6.0
-  sample-interval-ticks: 20
-  health-sample-interval-ticks: 40
-  flush-interval-ticks: 200
-
-map:
-  publisher: STATIC_WEB
-  viewer-directory: viewer
-
-catchup:
-  enabled: true
-  meaningful-damage-threshold: 4.0
-  contribution-window-seconds: 180
-  end-rally:
+  overworld-radius: 64.0
+reporting:
+  storage-format: JSONL
+  capture-advancements: true
+  web:
     enabled: true
-    radius: 12
-  rules:
+    port: 18765
+deathstreaks:
+  enabled: true
+  tiers:
     - deaths: 3
-      keep-inventory: true
+      damage-to-reset: 6.0
+      keep-inventory-mode: INHERIT
+      saturation:
+        food: 20
+        saturation: 6.0
+      potion-effects:
+        - type: SPEED
+          duration-seconds: 30
+          amplifier: 0
+      items:
+        - material: IRON_HELMET
+          amount: 1
+        - material: IRON_CHESTPLATE
+          amount: 1
+        - material: IRON_LEGGINGS
+          amount: 1
+        - material: IRON_BOOTS
+          amount: 1
     - deaths: 5
-      keep-inventory: true
-      kit: iron_recovery
-    - deaths: 7
-      keep-inventory: true
-      kit: end_push
-      end-rally: true
-  kits:
-    iron_recovery:
+      damage-to-reset: 8.0
+      keep-inventory-mode: ALL
+      saturation:
+        food: 20
+        saturation: 8.0
+      potion-effects:
+        - type: SPEED
+          duration-seconds: 45
+          amplifier: 0
+        - type: REGENERATION
+          duration-seconds: 10
+          amplifier: 0
       items:
-        - "IRON_SWORD 1"
-        - "IRON_PICKAXE 1"
-        - "IRON_HELMET 1"
-        - "IRON_CHESTPLATE 1"
-        - "IRON_LEGGINGS 1"
-        - "IRON_BOOTS 1"
-        - "BREAD 16"
-    end_push:
-      items:
-        - "DIAMOND_SWORD 1"
-        - "COOKED_BEEF 24"
-        - "ENDER_PEARL 4"
-        - "ARROW 32"
+        - material: IRON_HELMET
+          amount: 1
+        - material: IRON_CHESTPLATE
+          amount: 1
+        - material: IRON_LEGGINGS
+          amount: 1
+        - material: IRON_BOOTS
+          amount: 1
+        - material: SHIELD
+          amount: 1

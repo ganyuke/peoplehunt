@@ -1,0 +1,124 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1720;
+  --panel: #17212b;
+  --panel-border: #2b3947;
+  --text: #e6edf3;
+  --muted: #9fb0c0;
+  --accent: #7dd3fc;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+.page {
+  max-width: 1800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+.header {
+  margin-bottom: 16px;
+}
+.header h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+.summary {
+  color: var(--muted);
+  line-height: 1.45;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 17px;
+}
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.scrubber-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.tabs, .players {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tab, .player-chip {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.tab.active, .player-chip.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.player-chip .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-right: 8px;
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+  gap: 16px;
+}
+.left-column, .right-column {
+  min-width: 0;
+}
+canvas {
+  width: 100%;
+  display: block;
+  background: #0d141b;
+  border-radius: 8px;
+  border: 1px solid #233140;
+}
+.scroll-box {
+  max-height: 420px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.timeline-row, .chat-row {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #101923;
+  border: 1px solid #233140;
+}
+.timeline-time, .chat-time {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.legend-muted {
+  color: var(--muted);
+}
+.empty {
+  color: var(--muted);
+  padding: 8px 0;
+}
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,15 +1,37 @@
-name: ManhuntPhased
+name: PeopleHunt
 version: ${version}
-main: io.github.ganyuke.manhunt.Manhunt
-api-version: '1.21'
-load: POSTWORLD
-author: OpenAI
-description: Configurable phased Minecraft Manhunt plugin scaffold.
+main: io.github.ganyuke.peoplehunt.PeopleHuntPlugin
+description: Manhunt-style game administration for Paper.
+author: ChatGPT 5.4 Pro
+api-version: '1.21.11'
+website: https://github.com/ganyuke/peoplehunt
 commands:
-  manhunt:
-    description: Main Manhunt admin command.
-    usage: /manhunt <subcommand>
-    permission: manhunt.admin
+  peoplehunt:
+    aliases: [manhunt]
+    description: Main PeopleHunt command.
+    usage: /<command>
+  compass:
+    description: Get a manhunt compass.
+    usage: /<command> [player]
+    permission: peoplehunt.compass
+  coordinate:
+    description: Convert overworld and nether coordinates.
+    usage: /<command> [overworld|nether] [x] [y] [z]
+    permission: peoplehunt.coordinate
+  wherewas:
+    description: Remember and share private coordinates.
+    usage: /<command> <this|remember|forget> ...
+    permission: peoplehunt.wherewas
 permissions:
-  manhunt.admin:
+  peoplehunt.admin:
+    description: Allows administrative PeopleHunt commands.
     default: op
+  peoplehunt.compass:
+    description: Allows using /compass.
+    default: true
+  peoplehunt.coordinate:
+    description: Allows using /coordinate.
+    default: true
+  peoplehunt.wherewas:
+    description: Allows using /wherewas.
+    default: true
