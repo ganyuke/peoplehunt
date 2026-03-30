@@ -183,11 +183,11 @@ public final class KitService {
             }
             return switch (kind) {
                 case "STORAGE" -> placeStorage(inventory, stack);
-                case "ARMOR_HEAD" -> placeArmor(() -> inventory.getHelmet(), inventory::setHelmet, stack);
-                case "ARMOR_CHEST" -> placeArmor(() -> inventory.getChestplate(), inventory::setChestplate, stack);
-                case "ARMOR_LEGS" -> placeArmor(() -> inventory.getLeggings(), inventory::setLeggings, stack);
-                case "ARMOR_FEET" -> placeArmor(() -> inventory.getBoots(), inventory::setBoots, stack);
-                case "OFFHAND" -> placeArmor(() -> inventory.getItemInOffHand(), inventory::setItemInOffHand, stack);
+                case "ARMOR_HEAD" -> placeArmor(inventory::getHelmet, inventory::setHelmet, stack);
+                case "ARMOR_CHEST" -> placeArmor(inventory::getChestplate, inventory::setChestplate, stack);
+                case "ARMOR_LEGS" -> placeArmor(inventory::getLeggings, inventory::setLeggings, stack);
+                case "ARMOR_FEET" -> placeArmor(inventory::getBoots, inventory::setBoots, stack);
+                case "OFFHAND" -> placeArmor(inventory::getItemInOffHand, inventory::setItemInOffHand, stack);
                 default -> false;
             };
         }

@@ -1,9 +1,10 @@
 package io.github.ganyuke.peoplehunt.command;
 
-import io.github.ganyuke.peoplehunt.game.CoordinateUtil;
+import io.github.ganyuke.peoplehunt.game.tools.CoordinateUtil;
 import java.util.List;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -45,14 +46,41 @@ public final class CoordinateCommand implements CommandExecutor, TabCompleter {
                 return true;
             }
             CoordinateUtil.ConvertedCoordinate converted = CoordinateUtil.convert(sourceEnvironment, x, y, z);
-            sender.sendMessage(Component.text(
-                    "%s -> %s: %.2f, %.2f, %.2f".formatted(sourceEnvironment.name().toLowerCase(), converted.targetEnvironment().name().toLowerCase(), converted.x(), converted.y(), converted.z()),
-                    NamedTextColor.GREEN
-            ));
+            sender.sendMessage(formatResult(sourceEnvironment, converted));
         } catch (NumberFormatException exception) {
             sender.sendMessage(Component.text("Coordinates must be numeric.", NamedTextColor.RED));
         }
         return true;
+    }
+
+    private static Component formatResult(World.Environment source, CoordinateUtil.ConvertedCoordinate converted) {
+        return Component.text()
+                .append(Component.text(friendlyName(source), environmentColor(source), TextDecoration.BOLD))
+                .append(Component.text(" → ", NamedTextColor.DARK_GRAY))
+                .append(Component.text(friendlyName(converted.targetEnvironment()), environmentColor(converted.targetEnvironment()), TextDecoration.BOLD))
+                .append(Component.text(": ", NamedTextColor.GRAY))
+                .append(Component.text("%.0f, %.0f, %.0f".formatted(converted.x(), converted.y(), converted.z()), NamedTextColor.WHITE))
+                .build();
+    }
+
+    /** Returns a player-friendly dimension name. */
+    private static String friendlyName(World.Environment env) {
+        return switch (env) {
+            case NORMAL -> "Overworld";
+            case NETHER -> "Nether";
+            case THE_END -> "End";
+            default -> env.name().toLowerCase();
+        };
+    }
+
+    /** Returns a thematically appropriate color per dimension. */
+    private static NamedTextColor environmentColor(World.Environment env) {
+        return switch (env) {
+            case NORMAL -> NamedTextColor.GREEN;
+            case NETHER -> NamedTextColor.RED;
+            case THE_END -> NamedTextColor.LIGHT_PURPLE;
+            default -> NamedTextColor.WHITE;
+        };
     }
 
     @Override

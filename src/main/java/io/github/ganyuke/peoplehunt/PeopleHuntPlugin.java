@@ -6,13 +6,17 @@ import io.github.ganyuke.peoplehunt.command.CoordinateCommand;
 import io.github.ganyuke.peoplehunt.command.PeopleHuntCommand;
 import io.github.ganyuke.peoplehunt.command.WhereWasCommand;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
-import io.github.ganyuke.peoplehunt.game.CompassService;
+import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.KitService;
-import io.github.ganyuke.peoplehunt.game.MatchManager;
 import io.github.ganyuke.peoplehunt.game.PersistentStateStore;
-import io.github.ganyuke.peoplehunt.game.SurroundService;
-import io.github.ganyuke.peoplehunt.game.WhereWasStore;
+import io.github.ganyuke.peoplehunt.game.tools.SurroundService;
+import io.github.ganyuke.peoplehunt.game.tools.WhereWasStore;
+import io.github.ganyuke.peoplehunt.game.match.MatchManager;
+import io.github.ganyuke.peoplehunt.game.match.MatchMovementService;
+import io.github.ganyuke.peoplehunt.game.match.MatchTickService;
+import io.github.ganyuke.peoplehunt.listener.CompassListener;
 import io.github.ganyuke.peoplehunt.listener.GameplayListener;
+import io.github.ganyuke.peoplehunt.listener.MatchLifecycleListener;
 import io.github.ganyuke.peoplehunt.report.EmbeddedWebServer;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.github.ganyuke.peoplehunt.report.ViewerAssets;
@@ -21,6 +25,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class PeopleHuntPlugin extends JavaPlugin {
@@ -57,11 +62,23 @@ public final class PeopleHuntPlugin extends JavaPlugin {
             reportService.loadIndex();
             viewerAssets = new ViewerAssets(this);
             compassService = new CompassService(this, peopleHuntConfig);
-            matchManager = new MatchManager(this, peopleHuntConfig, stateStore, stateData, kitService, compassService, reportService, new SurroundService());
-            compassService.setTargetProvider(matchManager);
+            var surroundService = new SurroundService();
+
+            MatchTickService tickService = new MatchTickService(this, peopleHuntConfig, reportService);
+            MatchManager matchManager = new MatchManager(this, peopleHuntConfig, stateStore, stateData, kitService, compassService, reportService, surroundService, tickService);
+            tickService.setMatchManager(matchManager); // Wiring circular dependency cleanly
+
+            MatchMovementService movementService = new MatchMovementService(matchManager, peopleHuntConfig);
+            compassService.setTargetProvider(movementService);
+
+            PluginManager pm = getServer().getPluginManager();
+            pm.registerEvents(movementService, this);
+            pm.registerEvents(new MatchLifecycleListener(this, peopleHuntConfig, matchManager, kitService, compassService, reportService), this);
+            pm.registerEvents(new GameplayListener(this, peopleHuntConfig, matchManager, reportService), this);
 
             registerCommands();
             getServer().getPluginManager().registerEvents(new GameplayListener(this, peopleHuntConfig, matchManager, reportService), this);
+            getServer().getPluginManager().registerEvents(new CompassListener(compassService), this);
             compassService.start();
 
             if (peopleHuntConfig.webEnabled()) {

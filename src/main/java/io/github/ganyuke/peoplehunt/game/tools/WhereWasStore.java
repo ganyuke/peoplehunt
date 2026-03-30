@@ -1,4 +1,4 @@
-package io.github.ganyuke.peoplehunt.game;
+package io.github.ganyuke.peoplehunt.game.tools;
 
 import com.google.gson.Gson;
 import java.io.IOException;
@@ -6,11 +6,8 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
+
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 
@@ -52,6 +49,12 @@ public final class WhereWasStore {
 
     public Optional<SavedCoordinate> lookup(UUID playerUuid, String identifier) {
         return Optional.ofNullable(values.getOrDefault(playerUuid, Map.of()).get(identifier.toLowerCase(Locale.ROOT)));
+    }
+
+    public List<String> listIdentifiers(UUID playerUuid) {
+        Map<String, SavedCoordinate> playerMap = values.get(playerUuid);
+        if (playerMap == null) return List.of();
+        return List.copyOf(playerMap.keySet());
     }
 
     public boolean forget(UUID playerUuid, String identifier) throws IOException {

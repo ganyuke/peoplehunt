@@ -1,7 +1,8 @@
 package io.github.ganyuke.peoplehunt.command;
 
-import io.github.ganyuke.peoplehunt.game.CompassService;
+import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.util.SelectorUtil;
+import java.util.ArrayList;
 import java.util.List;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -22,21 +23,42 @@ public final class CompassCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
-        List<Player> targets = args.length == 0 ? SelectorUtil.resolvePlayers(sender, null) : SelectorUtil.resolvePlayers(sender, args[0]);
+        List<Player> targets = args.length == 0
+                ? SelectorUtil.resolvePlayers(sender, null)
+                : SelectorUtil.resolvePlayers(sender, args[0]);
         if (targets.isEmpty()) {
             sender.sendMessage(Component.text("No target players matched.", NamedTextColor.RED));
             return true;
         }
         compassService.giveCompass(targets);
-        sender.sendMessage(Component.text("Gave compass to " + targets.size() + " player(s).", NamedTextColor.GREEN));
+        // Silent if the only target is the sender themselves.
+        boolean selfOnly = targets.size() == 1
+                && sender instanceof Player player
+                && targets.getFirst().equals(player);
+        if (!selfOnly) {
+            Component message = targets.size() == 1
+                    ? Component.text("Gave compass to " + targets.getFirst().getName() + ".", NamedTextColor.GREEN)
+                    : Component.text("Gave compass to " + targets.size() + " players.", NamedTextColor.GREEN);
+            sender.sendMessage(message);
+        }
         return true;
     }
 
     @Override
     public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
-        if (args.length == 1) {
-            return List.of("@s", "@p", "@a");
+        if (args.length != 1) {
+            return List.of();
         }
-        return List.of();
+        String partial = args[0].toLowerCase();
+        List<String> completions = new ArrayList<>(List.of("@s", "@p", "@a"));
+        sender.getServer().getOnlinePlayers().stream()
+                .map(Player::getName)
+                .forEach(completions::add);
+        if (partial.isEmpty()) {
+            return completions;
+        }
+        return completions.stream()
+                .filter(s -> s.toLowerCase().startsWith(partial))
+                .toList();
     }
 }

@@ -1,6 +1,6 @@
 package io.github.ganyuke.peoplehunt.config;
 
-import io.github.ganyuke.peoplehunt.game.CompassDimensionMode;
+import io.github.ganyuke.peoplehunt.game.compass.CompassDimensionMode;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
 import io.github.ganyuke.peoplehunt.report.ReportStorageFormat;
 import java.util.ArrayList;

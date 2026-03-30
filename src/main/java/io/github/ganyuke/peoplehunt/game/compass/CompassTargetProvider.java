@@ -1,4 +1,4 @@
-package io.github.ganyuke.peoplehunt.game;
+package io.github.ganyuke.peoplehunt.game.compass;
 
 import java.util.UUID;
 import org.bukkit.Location;

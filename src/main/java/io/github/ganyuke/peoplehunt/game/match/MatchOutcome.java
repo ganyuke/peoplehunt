@@ -1,4 +1,4 @@
-package io.github.ganyuke.peoplehunt.game;
+package io.github.ganyuke.peoplehunt.game.match;
 
 public enum MatchOutcome {
     RUNNER_VICTORY,

@@ -1,9 +1,8 @@
-package io.github.ganyuke.peoplehunt.game;
+package io.github.ganyuke.peoplehunt.game.compass;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
 import io.github.ganyuke.peoplehunt.util.Text;
 import java.util.Collection;
-import java.util.List;
 import java.util.Objects;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -108,15 +107,39 @@ public final class CompassService {
 
     private ItemStack updateCompassItem(ItemStack item, Player holder) {
         Location target = targetProvider.resolveCompassTarget(holder);
-        ItemStack clone = item.clone();
-        CompassMeta meta = (CompassMeta) clone.getItemMeta();
-        if (target == null || targetProvider.selectedRunnerUuid() == null) {
-            meta.clearLodestone();
-        } else {
-            meta.setLodestone(target);
-            meta.setLodestoneTracked(false);
+        CompassMeta meta = (CompassMeta) item.getItemMeta();
+
+        boolean shouldClear = (target == null || targetProvider.selectedRunnerUuid() == null);
+        Location currentLodestone = meta.getLodestone();
+
+        // 1. Check if we need to clear it, but it's already cleared
+        if (shouldClear) {
+            if (!meta.hasLodestone()) {
+                return item; // No change needed
+            }
         }
-        clone.setItemMeta(meta);
+        // 2. Check if the target is in the exact same block as the current compass points to
+        else if (currentLodestone != null) {
+            if (Objects.equals(target.getWorld(), currentLodestone.getWorld()) &&
+                    target.getBlockX() == currentLodestone.getBlockX() &&
+                    target.getBlockY() == currentLodestone.getBlockY() &&
+                    target.getBlockZ() == currentLodestone.getBlockZ()) {
+                return item; // No change needed, return original object
+            }
+        }
+
+        // If we reach this point, the target has moved to a new block/world. We MUST update.
+        ItemStack clone = item.clone();
+        CompassMeta newMeta = (CompassMeta) clone.getItemMeta();
+
+        if (shouldClear) {
+            newMeta.clearLodestone();
+        } else {
+            newMeta.setLodestone(target);
+            newMeta.setLodestoneTracked(false);
+        }
+
+        clone.setItemMeta(newMeta);
         return clone;
     }
 }

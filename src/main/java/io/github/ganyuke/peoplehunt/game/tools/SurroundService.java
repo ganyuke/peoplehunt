@@ -1,4 +1,4 @@
-package io.github.ganyuke.peoplehunt.game;
+package io.github.ganyuke.peoplehunt.game.tools;
 
 import java.util.ArrayList;
 import java.util.Comparator;

@@ -1,9 +1,9 @@
 package io.github.ganyuke.peoplehunt.command;
 
-import io.github.ganyuke.peoplehunt.game.CompassService;
+import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
 import io.github.ganyuke.peoplehunt.game.KitService;
-import io.github.ganyuke.peoplehunt.game.MatchManager;
+import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.report.ReportModels.IndexEntry;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.github.ganyuke.peoplehunt.report.ViewerAssets;
@@ -13,12 +13,10 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -47,6 +45,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
         String subcommand = args.length == 0 ? "status" : args[0].toLowerCase();
         try {
+            // portal is intentionally exempt from the admin gate.
             if (subcommand.equals("portal")) {
                 return handlePortal(sender);
             }
@@ -55,18 +54,18 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 return true;
             }
             return switch (subcommand) {
-                case "start" -> handleStart(sender);
-                case "stop" -> handleStop(sender);
-                case "prime" -> handlePrime(sender, args);
-                case "prepare" -> handlePrepare(sender);
-                case "runner" -> handleRunner(sender, args);
-                case "hunter" -> handleHunter(sender, args);
-                case "status" -> handleStatus(sender);
-                case "surround" -> handleSurround(sender, args);
-                case "compass" -> handleCompass(sender, args);
-                case "kit" -> handleKit(sender, args);
-                case "keepinventory", "keepinv" -> handleKeepInventory(sender, args);
-                case "aar" -> handleAar(sender, args);
+                case "start"                      -> handleStart(sender);
+                case "stop"                       -> handleStop(sender);
+                case "prime"                      -> handlePrime(sender, args);
+                case "prepare"                    -> handlePrepare(sender);
+                case "runner"                     -> handleRunner(sender, args);
+                case "hunter"                     -> handleHunter(sender, args);
+                case "status"                     -> handleStatus(sender);
+                case "surround"                   -> handleSurround(sender, args);
+                case "compass"                    -> handleCompass(sender, args);
+                case "kit"                        -> handleKit(sender, args);
+                case "keepinventory", "keepinv"   -> handleKeepInventory(sender, args);
+                case "aar"                        -> handleAar(sender, args);
                 default -> {
                     sender.sendMessage(Component.text("Unknown subcommand.", NamedTextColor.RED));
                     yield true;
@@ -83,6 +82,10 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             return true;
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Subcommand handlers
+    // -------------------------------------------------------------------------
 
     private boolean handleStart(CommandSender sender) throws IOException {
         matchManager.startNow();
@@ -110,19 +113,25 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleRunner(CommandSender sender, String[] args) {
-        List<Player> targets = args.length >= 2 ? SelectorUtil.resolvePlayers(sender, args[1]) : SelectorUtil.resolvePlayers(sender, null);
+        List<Player> targets = args.length >= 2
+                ? SelectorUtil.resolvePlayers(sender, args[1])
+                : SelectorUtil.resolvePlayers(sender, null);
         if (targets.isEmpty()) {
             sender.sendMessage(Component.text("No player matched.", NamedTextColor.RED));
             return true;
         }
-        Player player = targets.get(0);
+        Player player = targets.getFirst();
         boolean set = matchManager.toggleRunner(player.getUniqueId());
-        sender.sendMessage(Component.text((set ? "Runner set to " : "Runner unset: ") + player.getName(), NamedTextColor.GREEN));
+        sender.sendMessage(Component.text(
+                (set ? "Runner set to " : "Runner unset: ") + player.getName(),
+                NamedTextColor.GREEN));
         return true;
     }
 
     private boolean handleHunter(CommandSender sender, String[] args) {
-        List<Player> targets = args.length >= 2 ? SelectorUtil.resolvePlayers(sender, args[1]) : SelectorUtil.resolvePlayers(sender, null);
+        List<Player> targets = args.length >= 2
+                ? SelectorUtil.resolvePlayers(sender, args[1])
+                : SelectorUtil.resolvePlayers(sender, null);
         if (targets.isEmpty()) {
             sender.sendMessage(Component.text("No players matched.", NamedTextColor.RED));
             return true;
@@ -135,13 +144,12 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             }
             boolean wasExplicit = matchManager.explicitHunters().contains(player.getUniqueId());
             boolean nowSelected = matchManager.toggleHunter(player.getUniqueId());
-            if (nowSelected && !wasExplicit) {
-                added++;
-            } else if (!nowSelected && wasExplicit) {
-                removed++;
-            }
+            if (nowSelected && !wasExplicit) added++;
+            else if (!nowSelected && wasExplicit) removed++;
         }
-        sender.sendMessage(Component.text("Hunters updated. Added: " + added + ", removed: " + removed, NamedTextColor.GREEN));
+        sender.sendMessage(Component.text(
+                "Hunters updated. Added: " + added + ", removed: " + removed,
+                NamedTextColor.GREEN));
         return true;
     }
 
@@ -163,13 +171,24 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleCompass(CommandSender sender, String[] args) {
-        List<Player> targets = args.length >= 2 ? SelectorUtil.resolvePlayers(sender, args[1]) : SelectorUtil.resolvePlayers(sender, null);
+        List<Player> targets = args.length >= 2
+                ? SelectorUtil.resolvePlayers(sender, args[1])
+                : SelectorUtil.resolvePlayers(sender, null);
         if (targets.isEmpty()) {
             sender.sendMessage(Component.text("No target players matched.", NamedTextColor.RED));
             return true;
         }
         compassService.giveCompass(targets);
-        sender.sendMessage(Component.text("Compass given to " + targets.size() + " player(s).", NamedTextColor.GREEN));
+        // Mirrors the standalone /compass command: name for one, count for many.
+        boolean selfOnly = targets.size() == 1
+                && sender instanceof Player player
+                && targets.getFirst().equals(player);
+        if (!selfOnly) {
+            Component message = targets.size() == 1
+                    ? Component.text("Gave compass to " + targets.getFirst().getName() + ".", NamedTextColor.GREEN)
+                    : Component.text("Gave compass to " + targets.size() + " players.", NamedTextColor.GREEN);
+            sender.sendMessage(message);
+        }
         return true;
     }
 
@@ -195,7 +214,9 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 if (removed && identifier.equals(matchManager.activeKitId())) {
                     matchManager.setActiveKitId(null);
                 }
-                sender.sendMessage(Component.text(removed ? "Deleted kit '" + identifier + "'." : "Kit not found.", removed ? NamedTextColor.GREEN : NamedTextColor.RED));
+                sender.sendMessage(Component.text(
+                        removed ? "Deleted kit '" + identifier + "'." : "Kit not found.",
+                        removed ? NamedTextColor.GREEN : NamedTextColor.RED));
             }
             default -> sender.sendMessage(Component.text("Unknown kit action.", NamedTextColor.RED));
         }
@@ -207,7 +228,13 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("Usage: /peoplehunt keepinventory <none|kit|all>", NamedTextColor.RED));
             return true;
         }
-        KeepInventoryMode mode = KeepInventoryMode.valueOf(args[1].toUpperCase(java.util.Locale.ROOT));
+        KeepInventoryMode mode;
+        try {
+            mode = KeepInventoryMode.valueOf(args[1].toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            sender.sendMessage(Component.text("Unknown mode '" + args[1] + "'. Valid: none, kit, all.", NamedTextColor.RED));
+            return true;
+        }
         if (mode == KeepInventoryMode.INHERIT) {
             sender.sendMessage(Component.text("INHERIT is only valid inside deathstreak config tiers.", NamedTextColor.RED));
             return true;
@@ -222,9 +249,8 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("Usage: /peoplehunt aar <list|export>", NamedTextColor.RED));
             return true;
         }
-        String action = args[1].toLowerCase();
-        return switch (action) {
-            case "list" -> handleAarList(sender);
+        return switch (args[1].toLowerCase()) {
+            case "list"   -> handleAarList(sender);
             case "export" -> handleAarExport(sender, args);
             default -> {
                 sender.sendMessage(Component.text("Unknown aar action.", NamedTextColor.RED));
@@ -242,8 +268,13 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(Component.text("Reports:", NamedTextColor.GOLD));
         for (IndexEntry entry : entries) {
             Component line = Component.text(entry.reportId().toString(), NamedTextColor.AQUA)
-                    .hoverEvent(HoverEvent.showText(Component.text("Runner UUID: " + entry.runnerUuid(), NamedTextColor.GRAY)))
-                    .append(Component.text(" — " + entry.runnerName() + " — " + entry.outcome() + " — " + Text.formatTimestamp(entry.endedAtEpochMillis()), NamedTextColor.GRAY));
+                    .hoverEvent(HoverEvent.showText(
+                            Component.text("Runner UUID: " + entry.runnerUuid(), NamedTextColor.GRAY)))
+                    .append(Component.text(
+                            " — " + entry.runnerName()
+                                    + " — " + entry.outcome()
+                                    + " — " + Text.formatTimestamp(entry.endedAtEpochMillis()),
+                            NamedTextColor.GRAY));
             sender.sendMessage(line);
         }
         return true;
@@ -275,31 +306,80 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    // -------------------------------------------------------------------------
+    // Tab completion
+    // -------------------------------------------------------------------------
+
+    @Override
+    public @Nullable List<String> onTabComplete(
+            @NotNull CommandSender sender,
+            @NotNull Command command,
+            @NotNull String alias,
+            @NotNull String[] args) {
+
+        String partial = args[args.length - 1].toLowerCase();
+
+        if (args.length == 1) {
+            return filter(List.of(
+                    "start", "stop", "prime", "prepare",
+                    "runner", "hunter", "status", "surround",
+                    "compass", "kit", "keepinventory", "keepinv",
+                    "aar", "portal"), partial);
+        }
+
+        if (args.length == 2) {
+            List<String> opts = switch (args[0].toLowerCase()) {
+                case "prime"                    -> List.of("true", "false");
+                case "runner", "hunter",
+                     "compass"                  -> playerSuggestions(sender);
+                case "kit"                      -> List.of("set", "delete");
+                case "keepinventory", "keepinv" -> List.of("none", "kit", "all");
+                case "aar"                      -> List.of("list", "export");
+                default                         -> List.of();
+            };
+            return filter(opts, partial);
+        }
+
+        if (args.length == 3) {
+            // kit delete <identifier>
+            if (args[0].equalsIgnoreCase("kit") && args[1].equalsIgnoreCase("delete")) {
+                return filter(new ArrayList<>(kitService.identifiers()), partial);
+            }
+            // aar export <uuid>
+            if (args[0].equalsIgnoreCase("aar") && args[1].equalsIgnoreCase("export")) {
+                return filter(
+                        reportService.listReports().stream()
+                                .map(e -> e.reportId().toString())
+                                .toList(),
+                        partial);
+            }
+        }
+
+        return List.of();
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
     private boolean isAdmin(CommandSender sender) {
         return sender.hasPermission("peoplehunt.admin") || sender.isOp();
     }
 
-    @Override
-    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
-        if (args.length == 1) {
-            return List.of("start", "stop", "prime", "prepare", "runner", "hunter", "status", "surround", "compass", "kit", "keepinventory", "aar", "portal");
-        }
-        if (args.length == 2) {
-            return switch (args[0].toLowerCase()) {
-                case "prime" -> List.of("true", "false");
-                case "runner", "hunter", "compass" -> List.of("@s", "@p", "@a");
-                case "kit" -> List.of("set", "delete");
-                case "keepinventory", "keepinv" -> List.of("none", "kit", "all");
-                case "aar" -> List.of("list", "export");
-                default -> List.of();
-            };
-        }
-        if (args.length == 3 && args[0].equalsIgnoreCase("aar") && args[1].equalsIgnoreCase("export")) {
-            return reportService.listReports().stream().map(entry -> entry.reportId().toString()).toList();
-        }
-        if (args.length == 3 && args[0].equalsIgnoreCase("kit") && args[1].equalsIgnoreCase("delete")) {
-            return new ArrayList<>(kitService.identifiers());
-        }
-        return List.of();
+    /** Builds the standard player selector + online name list. */
+    private static List<String> playerSuggestions(CommandSender sender) {
+        List<String> suggestions = new ArrayList<>(List.of("@s", "@p", "@a"));
+        sender.getServer().getOnlinePlayers().stream()
+                .map(Player::getName)
+                .forEach(suggestions::add);
+        return suggestions;
+    }
+
+    /** Returns entries from {@code options} whose lowercase form starts with {@code partial}. */
+    private static List<String> filter(List<String> options, String partial) {
+        if (partial.isEmpty()) return options;
+        return options.stream()
+                .filter(s -> s.toLowerCase().startsWith(partial))
+                .toList();
     }
 }

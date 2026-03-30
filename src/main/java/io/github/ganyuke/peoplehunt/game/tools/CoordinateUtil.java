@@ -1,4 +1,4 @@
-package io.github.ganyuke.peoplehunt.game;
+package io.github.ganyuke.peoplehunt.game.tools;
 
 import org.bukkit.Location;
 import org.bukkit.World;

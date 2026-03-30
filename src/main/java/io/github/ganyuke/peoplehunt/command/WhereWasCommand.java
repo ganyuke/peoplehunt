@@ -1,8 +1,9 @@
 package io.github.ganyuke.peoplehunt.command;
 
-import io.github.ganyuke.peoplehunt.game.WhereWasStore;
+import io.github.ganyuke.peoplehunt.game.tools.WhereWasStore;
 import io.github.ganyuke.peoplehunt.util.SelectorUtil;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -71,6 +72,11 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
 
     private void rememberCoordinate(Player player, String identifier, String[] args) throws IOException {
         Location location;
+        if (args.length == 3 || args.length == 4) {
+            // args[2] or args[2..3] present but incomplete — not enough for x y z
+            player.sendMessage(Component.text("Coordinates must be specified as x y z.", NamedTextColor.RED));
+            return;
+        }
         if (args.length >= 5) {
             location = player.getLocation().clone();
             location.setX(Double.parseDouble(args[2]));
@@ -80,7 +86,10 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
             location = player.getLocation();
         }
         whereWasStore.remember(player.getUniqueId(), identifier, location);
-        player.sendMessage(Component.text("Saved '" + identifier + "' at " + location.getWorld().getKey().asString() + ": " + String.format("%.2f, %.2f, %.2f", location.getX(), location.getY(), location.getZ()), NamedTextColor.GREEN));
+        player.sendMessage(Component.text(
+                "Saved '" + identifier + "' at " + location.getWorld().getKey().asString()
+                        + ": " + String.format("%.2f, %.2f, %.2f", location.getX(), location.getY(), location.getZ()),
+                NamedTextColor.GREEN));
     }
 
     private void forgetCoordinate(Player player, String identifier) throws IOException {
@@ -93,13 +102,81 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
     }
 
     @Override
-    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
-        if (args.length == 1) {
-            return List.of("this", "remember", "forget");
+    public @Nullable List<String> onTabComplete(
+            @NotNull CommandSender sender,
+            @NotNull Command command,
+            @NotNull String alias,
+            @NotNull String[] args) {
+
+        // Tab completion is only meaningful for player senders since identifiers are per-player.
+        if (!(sender instanceof Player player)) {
+            return List.of();
         }
-        if (args.length == 3 && args[0].equalsIgnoreCase("this")) {
-            return List.of("@s", "@p", "@a");
+
+        String partial = args[args.length - 1].toLowerCase();
+
+        return switch (args.length) {
+            // arg[0]: subcommand
+            case 1 -> filter(List.of("this", "remember", "forget"), partial);
+
+            // arg[1]: identifier — offer saved identifiers for subcommands that read/delete them,
+            // and a generic "<identifier>" hint for "remember" (which creates new ones).
+            case 2 -> {
+                String sub = args[0].toLowerCase();
+                if (sub.equals("this") || sub.equals("forget")) {
+                    List<String> identifiers = new ArrayList<>(whereWasStore.listIdentifiers(player.getUniqueId()));
+                    yield filter(identifiers, partial);
+                }
+                // "remember": no existing identifiers to offer, but give a placeholder hint.
+                yield filter(List.of("<identifier>"), partial);
+            }
+
+            // arg[2]: context-sensitive
+            case 3 -> {
+                String sub = args[0].toLowerCase();
+                // "this <identifier> <player>" — offer player selectors
+                if (sub.equals("this")) {
+                    List<String> players = new ArrayList<>(List.of("@s", "@p", "@a"));
+                    sender.getServer().getOnlinePlayers()
+                            .stream()
+                            .map(Player::getName)
+                            .forEach(players::add);
+                    yield filter(players, partial);
+                }
+                // "remember <identifier> <x>" — suggest current X as a hint
+                if (sub.equals("remember")) {
+                    yield filter(List.of(String.valueOf((int) player.getLocation().getX())), partial);
+                }
+                yield List.of();
+            }
+
+            // arg[3]: "remember <identifier> <x> <y>"
+            case 4 -> {
+                if (args[0].equalsIgnoreCase("remember")) {
+                    yield filter(List.of(String.valueOf((int) player.getLocation().getY())), partial);
+                }
+                yield List.of();
+            }
+
+            // arg[4]: "remember <identifier> <x> <y> <z>"
+            case 5 -> {
+                if (args[0].equalsIgnoreCase("remember")) {
+                    yield filter(List.of(String.valueOf((int) player.getLocation().getZ())), partial);
+                }
+                yield List.of();
+            }
+
+            default -> List.of();
+        };
+    }
+
+    /** Returns entries from {@code options} whose lowercase form starts with {@code partial}. */
+    private static List<String> filter(List<String> options, String partial) {
+        if (partial.isEmpty()) {
+            return options;
         }
-        return List.of();
+        return options.stream()
+                .filter(s -> s.toLowerCase().startsWith(partial))
+                .toList();
     }
 }

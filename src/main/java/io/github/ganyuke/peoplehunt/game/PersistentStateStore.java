@@ -1,6 +1,8 @@
 package io.github.ganyuke.peoplehunt.game;
 
 import com.google.gson.Gson;
+import io.github.ganyuke.peoplehunt.game.match.MatchOutcome;
+
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
