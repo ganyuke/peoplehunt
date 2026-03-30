@@ -1,0 +1,15 @@
+name: ManhuntPhased
+version: ${version}
+main: io.github.ganyuke.manhunt.Manhunt
+api-version: '1.21'
+load: POSTWORLD
+author: OpenAI
+description: Configurable phased Minecraft Manhunt plugin scaffold.
+commands:
+  manhunt:
+    description: Main Manhunt admin command.
+    usage: /manhunt <subcommand>
+    permission: manhunt.admin
+permissions:
+  manhunt.admin:
+    default: op

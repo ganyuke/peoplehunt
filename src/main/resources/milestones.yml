@@ -1,0 +1,41 @@
+scan-interval-ticks: 20
+milestones:
+  first_wood:
+    enabled: true
+    title: "First Wood"
+    roles: [RUNNER, HUNTER]
+    type: INVENTORY_ANY
+    amount: 1
+    materials:
+      - OAK_LOG
+      - BIRCH_LOG
+      - SPRUCE_LOG
+      - JUNGLE_LOG
+      - ACACIA_LOG
+      - DARK_OAK_LOG
+      - MANGROVE_LOG
+      - CHERRY_LOG
+      - PALE_OAK_LOG
+      - CRIMSON_STEM
+      - WARPED_STEM
+  first_iron:
+    enabled: true
+    title: "First Iron"
+    roles: [RUNNER, HUNTER]
+    type: INVENTORY_ANY
+    amount: 1
+    materials:
+      - RAW_IRON
+      - IRON_INGOT
+  entered_nether:
+    enabled: true
+    title: "Entered the Nether"
+    roles: [RUNNER, HUNTER]
+    type: WORLD_ENVIRONMENT
+    environment: NETHER
+  entered_the_end:
+    enabled: true
+    title: "Entered the End"
+    roles: [RUNNER, HUNTER]
+    type: WORLD_ENVIRONMENT
+    environment: THE_END
