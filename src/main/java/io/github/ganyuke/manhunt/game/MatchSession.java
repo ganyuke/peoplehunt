@@ -31,17 +31,43 @@ public final class MatchSession {
         return runnerId;
     }
 
-    public Set<UUID> hunterIds() {
+    public synchronized Set<UUID> hunterIds() {
         return Set.copyOf(hunterIds);
     }
 
-    public Set<UUID> participants() {
+    public synchronized int hunterCount() {
+        return hunterIds.size();
+    }
+
+    public synchronized void replaceHunters(Collection<UUID> hunters) {
+        hunterIds.clear();
+        if (hunters == null) {
+            return;
+        }
+        for (UUID hunterId : hunters) {
+            if (hunterId != null && !hunterId.equals(runnerId)) {
+                hunterIds.add(hunterId);
+            }
+        }
+    }
+
+    public synchronized void addHunter(UUID hunterId) {
+        if (hunterId != null && !hunterId.equals(runnerId)) {
+            hunterIds.add(hunterId);
+        }
+    }
+
+    public synchronized void removeHunter(UUID hunterId) {
+        hunterIds.remove(hunterId);
+    }
+
+    public synchronized Set<UUID> participants() {
         LinkedHashSet<UUID> participants = new LinkedHashSet<>(hunterIds);
         participants.add(runnerId);
         return participants;
     }
 
-    public boolean isParticipant(UUID playerId) {
+    public synchronized boolean isParticipant(UUID playerId) {
         return runnerId.equals(playerId) || hunterIds.contains(playerId);
     }
 

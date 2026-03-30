@@ -81,7 +81,8 @@ public final class PathSampler {
         return session != null
                 && session.sessionId().equals(activeSessionId)
                 && session.isParticipant(player.getUniqueId())
-                && session.isRunning();
+                && session.isRunning()
+                && player.getGameMode() != org.bukkit.GameMode.SPECTATOR;
     }
 
     private record SampleCursor(Location location, Instant instant) {

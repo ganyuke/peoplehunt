@@ -2,6 +2,7 @@ package io.github.ganyuke.manhunt.command;
 
 import io.github.ganyuke.manhunt.Manhunt;
 import io.github.ganyuke.manhunt.analytics.SessionExporter;
+import io.github.ganyuke.manhunt.config.PluginSettings;
 import io.github.ganyuke.manhunt.core.ConfigManager;
 import io.github.ganyuke.manhunt.game.CompassService;
 import io.github.ganyuke.manhunt.game.MatchManager;
@@ -14,8 +15,9 @@ import io.github.ganyuke.manhunt.util.TextUtil;
 import io.github.ganyuke.manhunt.util.TimeFormat;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.TabExecutor;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
 import java.nio.file.Path;
@@ -24,9 +26,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
-public final class ManhuntCommand implements TabExecutor {
+public final class ManhuntCommand implements CommandExecutor, TabCompleter {
     private final Manhunt plugin;
     private final ConfigManager configManager;
     private final RoleService roleService;
@@ -57,7 +60,6 @@ public final class ManhuntCommand implements TabExecutor {
             sendHelp(sender);
             return true;
         }
-
         try {
             switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "runner" -> handleRunner(sender, args);
@@ -114,33 +116,42 @@ public final class ManhuntCommand implements TabExecutor {
         Player player = requireOnlinePlayer(args[1]);
         roleService.setRunner(player.getUniqueId());
         message(sender, "&aRunner set to &f" + player.getName());
+        message(sender, "&eAll other online players will now be treated as hunters by default.");
     }
 
     private void handleHunters(CommandSender sender, String[] args) {
-        ensureRoleEditable();
         if (args.length < 2) {
             throw new IllegalStateException("Usage: /manhunt hunters <auto|add|remove> [player]");
         }
         switch (args[1].toLowerCase(Locale.ROOT)) {
             case "auto" -> {
+                ensureRoleEditable();
                 roleService.autoAssignHunters();
-                message(sender, "&aHunters auto-assigned from online players.");
+                message(sender, "&aReset hunter overrides. All online non-runner players are hunters.");
             }
             case "add" -> {
                 if (args.length < 3) {
                     throw new IllegalStateException("Usage: /manhunt hunters add <player>");
                 }
                 Player player = requireOnlinePlayer(args[2]);
-                roleService.addHunter(player.getUniqueId());
-                message(sender, "&aAdded hunter &f" + player.getName());
+                MatchSession session = matchManager.getCurrentSession();
+                if (session != null && session.isRunning()) {
+                    matchManager.addMidgameHunterSpectator(player);
+                    message(sender, "&aAdded hunter spectator &f" + player.getName());
+                } else {
+                    ensureRoleEditable();
+                    roleService.addHunter(player.getUniqueId());
+                    message(sender, "&aAdded hunter override &f" + player.getName());
+                }
             }
             case "remove" -> {
+                ensureRoleEditable();
                 if (args.length < 3) {
                     throw new IllegalStateException("Usage: /manhunt hunters remove <player>");
                 }
                 Player player = requireOnlinePlayer(args[2]);
                 roleService.removeHunter(player.getUniqueId());
-                message(sender, "&eRemoved hunter &f" + player.getName());
+                message(sender, "&eExcluded hunter &f" + player.getName() + "&e from auto-hunter selection.");
             }
             default -> throw new IllegalStateException("Unknown hunters subcommand.");
         }
@@ -158,14 +169,18 @@ public final class ManhuntCommand implements TabExecutor {
 
     private void handleSurround(CommandSender sender, String[] args) {
         int radius = args.length >= 2 ? Integer.parseInt(args[1]) : configManager.settings().surroundDefaultRadius();
-        MatchSession session = matchManager.getCurrentSession();
-        if (session == null) {
-            if (!roleService.hasRunner() || !roleService.hasHunters()) {
-                throw new IllegalStateException("Choose a runner and at least one hunter first.");
-            }
-            session = new MatchSession(UUID.randomUUID(), roleService.getRunnerId(), roleService.getHunterIds());
+        if (!roleService.hasRunner()) {
+            throw new IllegalStateException("Choose a runner first.");
         }
-        int moved = surroundService.surroundRunner(session, radius);
+        MatchSession active = matchManager.getCurrentSession();
+        Set<UUID> hunters = (active != null && active.isRunning()) ? active.hunterIds() : roleService.resolveHuntersForMatchStart();
+        if (hunters.isEmpty()) {
+            throw new IllegalStateException("At least one hunter must be online to surround the runner.");
+        }
+        MatchSession effectiveSession = (active != null && active.isRunning())
+                ? active
+                : new MatchSession(UUID.randomUUID(), roleService.getRunnerId(), hunters);
+        int moved = surroundService.surroundRunner(effectiveSession, radius);
         message(sender, "&aTeleported &f" + moved + "&a hunters around the runner.");
     }
 
@@ -176,21 +191,12 @@ public final class ManhuntCommand implements TabExecutor {
         if (args.length < 3 || "hunters".equalsIgnoreCase(args[2])) {
             int given = 0;
             MatchSession session = matchManager.getCurrentSession();
-            if (session != null) {
-                for (UUID hunterId : session.hunterIds()) {
-                    Player hunter = Bukkit.getPlayer(hunterId);
-                    if (hunter != null) {
-                        compassService.giveTrackerCompass(hunter);
-                        given++;
-                    }
-                }
-            } else {
-                for (UUID hunterId : roleService.getHunterIds()) {
-                    Player hunter = Bukkit.getPlayer(hunterId);
-                    if (hunter != null) {
-                        compassService.giveTrackerCompass(hunter);
-                        given++;
-                    }
+            Set<UUID> hunterIds = session != null && session.isRunning() ? session.hunterIds() : roleService.getHunterIds();
+            for (UUID hunterId : hunterIds) {
+                Player hunter = Bukkit.getPlayer(hunterId);
+                if (hunter != null) {
+                    compassService.giveTrackerCompass(hunter);
+                    given++;
                 }
             }
             message(sender, "&aGave tracker compasses to &f" + given + "&a hunters.");
@@ -206,12 +212,13 @@ public final class ManhuntCommand implements TabExecutor {
         SessionState state = session == null ? SessionState.IDLE : session.state();
         message(sender, "&eState: &f" + state.name());
         message(sender, "&eRunner: &f" + (roleService.getRunnerId() == null ? "none" : PlayerUtil.name(roleService.getRunnerId())));
-        List<String> hunters = roleService.getHunterIds().stream().map(PlayerUtil::name).toList();
+        Set<UUID> hunterIds = session != null && (session.isPrimed() || session.isRunning() || session.hasEnded()) ? session.hunterIds() : roleService.getHunterIds();
+        List<String> hunters = hunterIds.stream().map(PlayerUtil::name).toList();
         message(sender, "&eHunters: &f" + (hunters.isEmpty() ? "none" : String.join(", ", hunters)));
         if (session != null) {
             message(sender, "&eSession ID: &f" + session.sessionId());
-            if (session.hasStarted()) {
-                message(sender, "&eElapsed: &f" + TimeFormat.mmss(matchManager.elapsed()));
+            if (session.hasStarted() && !session.hasEnded()) {
+                message(sender, "&eElapsed: &f" + TimeFormat.compactHuman(matchManager.elapsed()));
             }
             message(sender, "&eVictory: &f" + session.victoryType().name());
             message(sender, "&eReason: &f" + session.endReason());
@@ -268,7 +275,9 @@ public final class ManhuntCommand implements TabExecutor {
 
     private void sendHelp(CommandSender sender) {
         message(sender, "&e/manhunt runner <player>");
-        message(sender, "&e/manhunt hunters <auto|add|remove> [player]");
+        message(sender, "&e/manhunt hunters auto");
+        message(sender, "&e/manhunt hunters add <player>");
+        message(sender, "&e/manhunt hunters remove <player>");
         message(sender, "&e/manhunt prime");
         message(sender, "&e/manhunt start");
         message(sender, "&e/manhunt surround [radius]");

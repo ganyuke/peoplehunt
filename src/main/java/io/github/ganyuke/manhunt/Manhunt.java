@@ -12,18 +12,17 @@ import io.github.ganyuke.manhunt.catchup.DeathstreakService;
 import io.github.ganyuke.manhunt.command.ManhuntCommand;
 import io.github.ganyuke.manhunt.core.ConfigManager;
 import io.github.ganyuke.manhunt.game.CompassService;
-import io.github.ganyuke.manhunt.game.FreezeService;
 import io.github.ganyuke.manhunt.game.MatchManager;
+import io.github.ganyuke.manhunt.game.MatchStatsService;
 import io.github.ganyuke.manhunt.game.RoleService;
 import io.github.ganyuke.manhunt.game.SafeLocationResolver;
 import io.github.ganyuke.manhunt.game.SurroundService;
 import io.github.ganyuke.manhunt.game.TimerService;
 import io.github.ganyuke.manhunt.listeners.CombatAnalyticsListener;
-import io.github.ganyuke.manhunt.listeners.FreezeListener;
 import io.github.ganyuke.manhunt.listeners.MatchLifecycleListener;
 import io.github.ganyuke.manhunt.listeners.PathSamplingListener;
 import io.github.ganyuke.manhunt.map.MapPublisher;
-import io.github.ganyuke.manhunt.map.StaticJsonMapPublisher;
+import io.github.ganyuke.manhunt.map.StaticWebMapPublisher;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -31,7 +30,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class Manhunt extends JavaPlugin {
     private ConfigManager configManager;
     private RoleService roleService;
-    private FreezeService freezeService;
     private TimerService timerService;
     private CompassService compassService;
     private SafeLocationResolver safeLocationResolver;
@@ -42,6 +40,7 @@ public final class Manhunt extends JavaPlugin {
     private HealthSampler healthSampler;
     private MilestoneService milestoneService;
     private DeathstreakService deathstreakService;
+    private MatchStatsService matchStatsService;
     private SessionExporter sessionExporter;
     private MapPublisher mapPublisher;
     private MatchManager matchManager;
@@ -50,7 +49,6 @@ public final class Manhunt extends JavaPlugin {
     public void onEnable() {
         this.configManager = new ConfigManager(this);
         this.roleService = new RoleService();
-        this.freezeService = new FreezeService(configManager, roleService);
         this.timerService = new TimerService(this, configManager);
         this.compassService = new CompassService(this, configManager);
         this.safeLocationResolver = new SafeLocationResolver(configManager);
@@ -61,13 +59,13 @@ public final class Manhunt extends JavaPlugin {
         this.healthSampler = new HealthSampler(this, configManager, analyticsRecorder, roleService, lifeTracker);
         this.milestoneService = new MilestoneService(this, configManager, analyticsRecorder, roleService);
         this.deathstreakService = new DeathstreakService(configManager, roleService, safeLocationResolver);
+        this.matchStatsService = new MatchStatsService();
         this.sessionExporter = new SessionExporter(this, analyticsRecorder, configManager);
-        this.mapPublisher = new StaticJsonMapPublisher(configManager);
+        this.mapPublisher = new StaticWebMapPublisher(this, configManager);
         this.matchManager = new MatchManager(
                 this,
                 configManager,
                 roleService,
-                freezeService,
                 timerService,
                 compassService,
                 analyticsRecorder,
@@ -76,13 +74,14 @@ public final class Manhunt extends JavaPlugin {
                 milestoneService,
                 healthSampler,
                 deathstreakService,
+                matchStatsService,
                 mapPublisher
         );
         this.deathstreakService.setMatchManager(matchManager);
 
         registerCommands();
         registerListeners();
-        getLogger().info("ManhuntPhased enabled.");
+        getLogger().info("Manhunt enabled.");
     }
 
     @Override
@@ -115,7 +114,6 @@ public final class Manhunt extends JavaPlugin {
 
     private void registerListeners() {
         PluginManager pluginManager = getServer().getPluginManager();
-        pluginManager.registerEvents(new FreezeListener(freezeService), this);
         pluginManager.registerEvents(new CombatAnalyticsListener(matchManager, roleService, analyticsRecorder, lifeTracker, deathstreakService), this);
         pluginManager.registerEvents(new PathSamplingListener(matchManager, pathSampler), this);
         pluginManager.registerEvents(new MatchLifecycleListener(this, configManager, matchManager, lifeTracker, compassService, pathSampler, milestoneService, deathstreakService), this);

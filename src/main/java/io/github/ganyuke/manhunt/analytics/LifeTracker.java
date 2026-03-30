@@ -29,7 +29,7 @@ public final class LifeTracker {
         this.activeSessionId = session.sessionId();
         for (UUID participantId : session.participants()) {
             Player player = Bukkit.getPlayer(participantId);
-            if (player != null && player.isOnline()) {
+            if (player != null && player.isOnline() && player.getGameMode() != org.bukkit.GameMode.SPECTATOR) {
                 startLife(session, player, player.getLocation());
             }
         }
@@ -37,6 +37,9 @@ public final class LifeTracker {
 
     public void startLife(MatchSession session, Player player, Location location) {
         if (!session.sessionId().equals(activeSessionId)) {
+            return;
+        }
+        if (player.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
             return;
         }
         Role role = roleService.getRole(player.getUniqueId());

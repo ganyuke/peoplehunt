@@ -1,41 +1,43 @@
 package io.github.ganyuke.manhunt.game;
 
 import io.github.ganyuke.manhunt.core.ConfigManager;
-import io.github.ganyuke.manhunt.util.TimeFormat;
 import org.bukkit.Bukkit;
-import org.bukkit.boss.BarColor;
-import org.bukkit.boss.BarStyle;
-import org.bukkit.boss.BossBar;
-import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.UUID;
 
 public final class TimerService {
+    @FunctionalInterface
+    public interface IntervalListener {
+        void onInterval(MatchSession session, Duration elapsed, int intervalIndex);
+    }
+
     private final JavaPlugin plugin;
     private final ConfigManager configManager;
-    private BossBar bossBar;
     private BukkitTask task;
     private MatchSession session;
+    private int announcedIntervalIndex;
+    private IntervalListener intervalListener;
 
     public TimerService(JavaPlugin plugin, ConfigManager configManager) {
         this.plugin = plugin;
         this.configManager = configManager;
     }
 
+    public void setIntervalListener(IntervalListener intervalListener) {
+        this.intervalListener = intervalListener;
+    }
+
     public void start(MatchSession session) {
         stop();
         this.session = session;
-        if (!configManager.settings().timerEnabled()) {
+        this.announcedIntervalIndex = 0;
+        if (!configManager.settings().notificationsEnabled()) {
             return;
         }
-        BarColor color = configManager.settings().bossBarColor();
-        BarStyle style = configManager.settings().bossBarStyle();
-        this.bossBar = Bukkit.createBossBar("00:00", color, style);
-        this.task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 0L, configManager.settings().timerUpdateTicks());
+        this.task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 0L, configManager.settings().notificationCheckTicks());
     }
 
     public void stop() {
@@ -43,11 +45,8 @@ public final class TimerService {
             task.cancel();
             task = null;
         }
-        if (bossBar != null) {
-            bossBar.removeAll();
-            bossBar = null;
-        }
         session = null;
+        announcedIntervalIndex = 0;
     }
 
     public void restartIfRunning(MatchSession activeSession) {
@@ -61,37 +60,24 @@ public final class TimerService {
     }
 
     private void tick() {
-        if (session == null || bossBar == null || !session.hasStarted()) {
+        if (session == null || !session.isRunning() || session.startedAt() == null) {
+            return;
+        }
+        int intervalMinutes = configManager.settings().notificationIntervalMinutes();
+        if (intervalMinutes <= 0) {
             return;
         }
         Instant startedAt = session.startedAt();
-        if (startedAt == null) {
-            return;
-        }
         Duration elapsed = Duration.between(startedAt, Instant.now());
-        bossBar.setTitle("Manhunt • " + TimeFormat.mmss(elapsed));
-        bossBar.setProgress(1.0D);
-        refreshAudience();
-    }
-
-    private void refreshAudience() {
-        if (bossBar == null || session == null) {
+        int currentIntervalIndex = (int) (elapsed.toMinutes() / intervalMinutes);
+        if (currentIntervalIndex <= announcedIntervalIndex) {
             return;
         }
-        bossBar.removeAll();
-        if (configManager.settings().timerVisibleToRunner()) {
-            Player runner = Bukkit.getPlayer(session.runnerId());
-            if (runner != null) {
-                bossBar.addPlayer(runner);
+        for (int intervalIndex = announcedIntervalIndex + 1; intervalIndex <= currentIntervalIndex; intervalIndex++) {
+            if (intervalListener != null) {
+                intervalListener.onInterval(session, Duration.ofMinutes((long) intervalIndex * intervalMinutes), intervalIndex);
             }
         }
-        if (configManager.settings().timerVisibleToHunters()) {
-            for (UUID hunterId : session.hunterIds()) {
-                Player hunter = Bukkit.getPlayer(hunterId);
-                if (hunter != null) {
-                    bossBar.addPlayer(hunter);
-                }
-            }
-        }
+        announcedIntervalIndex = currentIntervalIndex;
     }
 }

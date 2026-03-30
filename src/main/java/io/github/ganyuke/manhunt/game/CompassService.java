@@ -25,6 +25,7 @@ public final class CompassService {
     private final NamespacedKey trackerKey;
     private final Map<String, Location> runnerLastKnownByWorld = new HashMap<>();
     private final Map<String, Location> runnerPortalAnchors = new HashMap<>();
+    private final Map<UUID, Location> lastAppliedTargetByHunter = new HashMap<>();
     private BukkitTask task;
     private MatchSession session;
 
@@ -49,6 +50,7 @@ public final class CompassService {
             task = null;
         }
         session = null;
+        lastAppliedTargetByHunter.clear();
     }
 
     public void restartIfRunning(MatchSession activeSession) {
@@ -62,6 +64,9 @@ public final class CompassService {
     }
 
     public void giveTrackerCompass(Player player) {
+        if (player == null || hasTrackerCompass(player.getInventory())) {
+            return;
+        }
         player.getInventory().addItem(createTrackerCompass());
     }
 
@@ -125,7 +130,11 @@ public final class CompassService {
     }
 
     private void updateHunterTrackers(Player hunter, Location target) {
+        if (target == null || !shouldRetarget(hunter.getUniqueId(), target)) {
+            return;
+        }
         PlayerInventory inventory = hunter.getInventory();
+        boolean updated = false;
         for (int slot = 0; slot < inventory.getSize(); slot++) {
             ItemStack itemStack = inventory.getItem(slot);
             if (!isTracker(itemStack)) {
@@ -134,13 +143,27 @@ public final class CompassService {
             if (!(itemStack.getItemMeta() instanceof CompassMeta compassMeta)) {
                 continue;
             }
-            if (target != null) {
-                compassMeta.setLodestone(target);
-                compassMeta.setLodestoneTracked(false);
-                itemStack.setItemMeta(compassMeta);
-                inventory.setItem(slot, itemStack);
-            }
+            compassMeta.setLodestone(target);
+            compassMeta.setLodestoneTracked(false);
+            itemStack.setItemMeta(compassMeta);
+            inventory.setItem(slot, itemStack);
+            updated = true;
         }
+        if (updated) {
+            lastAppliedTargetByHunter.put(hunter.getUniqueId(), target.clone());
+        }
+    }
+
+    private boolean shouldRetarget(UUID hunterId, Location target) {
+        Location previous = lastAppliedTargetByHunter.get(hunterId);
+        if (previous == null || previous.getWorld() == null || target.getWorld() == null) {
+            return true;
+        }
+        if (!previous.getWorld().equals(target.getWorld())) {
+            return true;
+        }
+        double minimumDistance = configManager.settings().compassMinimumTargetChangeDistance();
+        return previous.distanceSquared(target) >= minimumDistance * minimumDistance;
     }
 
     private ItemStack createTrackerCompass() {
@@ -153,6 +176,15 @@ public final class CompassService {
         meta.setLodestoneTracked(false);
         compass.setItemMeta(meta);
         return compass;
+    }
+
+    private boolean hasTrackerCompass(PlayerInventory inventory) {
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            if (isTracker(inventory.getItem(slot))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isTracker(ItemStack itemStack) {

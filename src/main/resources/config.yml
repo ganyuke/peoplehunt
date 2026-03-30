@@ -2,7 +2,7 @@ messages:
   prefix: "&6[Manhunt]&r "
 
 game:
-  freeze-during-prime: true
+  freeze-during-prime: false
   start-on-runner-move: true
   quit-as-hunter-win: true
   auto-give-compasses-on-start: true
@@ -10,12 +10,13 @@ game:
 
 compass:
   enabled: true
-  refresh-ticks: 10
+  refresh-ticks: 40
+  minimum-target-change-distance: 8.0
   mode: PORTAL_ANCHOR
   title: "&bRunner Tracker"
   lore:
-    - "&7Points at the runner or"
-    - "&7the configured cross-dimension anchor."
+    - "&7Updates on a rougher cadence"
+    - "&7to keep the hunt immersive."
 
 surround:
   default-radius: 8
@@ -24,14 +25,10 @@ surround:
   safe-search-radius: 6
   safe-search-vertical: 8
 
-timer:
+notifications:
   enabled: true
-  update-ticks: 20
-  bossbar:
-    color: BLUE
-    style: SOLID
-    show-to-runner: true
-    show-to-hunters: true
+  check-ticks: 100
+  interval-minutes: 30
 
 analytics:
   enabled: true
@@ -42,7 +39,8 @@ analytics:
   flush-interval-ticks: 200
 
 map:
-  publisher: STATIC_JSON
+  publisher: STATIC_WEB
+  viewer-directory: viewer
 
 catchup:
   enabled: true

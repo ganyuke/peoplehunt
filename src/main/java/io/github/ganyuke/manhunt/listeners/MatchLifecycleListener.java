@@ -84,7 +84,7 @@ public final class MatchLifecycleListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onParticipantDeathLifeClose(PlayerDeathEvent event) {
         MatchSession session = matchManager.getCurrentSession();
-        if (session == null || !session.isParticipant(event.getEntity().getUniqueId())) {
+        if (session == null || !session.isRunning() || !session.isParticipant(event.getEntity().getUniqueId())) {
             return;
         }
         lifeTracker.endLife(session, event.getEntity().getUniqueId(), event.getEntity().getLocation(), "death");
@@ -102,7 +102,7 @@ public final class MatchLifecycleListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerRespawn(PlayerRespawnEvent event) {
         MatchSession session = matchManager.getCurrentSession();
-        if (session == null || !session.isParticipant(event.getPlayer().getUniqueId())) {
+        if (session == null || !session.isRunning() || !session.isParticipant(event.getPlayer().getUniqueId())) {
             return;
         }
         deathstreakService.applyRespawnLocation(event);
@@ -168,7 +168,8 @@ public final class MatchLifecycleListener implements Listener {
         if (!lifeTracker.hasActiveLife(event.getPlayer().getUniqueId())) {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 MatchSession liveSession = matchManager.getCurrentSession();
-                if (liveSession != null && liveSession.isRunning() && liveSession.isParticipant(event.getPlayer().getUniqueId())) {
+                if (liveSession != null && liveSession.isRunning() && liveSession.isParticipant(event.getPlayer().getUniqueId())
+                        && event.getPlayer().getGameMode() != org.bukkit.GameMode.SPECTATOR) {
                     lifeTracker.startLife(liveSession, event.getPlayer(), event.getPlayer().getLocation());
                     pathSampler.forceSample(liveSession, event.getPlayer(), event.getPlayer().getLocation(), "JOIN", Map.of());
                 }

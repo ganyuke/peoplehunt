@@ -7,13 +7,20 @@ import io.github.ganyuke.manhunt.game.EndResolutionPolicy;
 import io.github.ganyuke.manhunt.game.Role;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.boss.BarColor;
-import org.bukkit.boss.BarStyle;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 public record PluginSettings(
         String prefix,
@@ -24,6 +31,7 @@ public record PluginSettings(
         EndResolutionPolicy endResolutionPolicy,
         boolean compassEnabled,
         int compassRefreshTicks,
+        double compassMinimumTargetChangeDistance,
         DimensionTrackingMode compassTrackingMode,
         String compassTitle,
         List<String> compassLore,
@@ -32,12 +40,9 @@ public record PluginSettings(
         int surroundMaxRadius,
         int surroundSafeSearchRadius,
         int surroundSafeSearchVertical,
-        boolean timerEnabled,
-        int timerUpdateTicks,
-        BarColor bossBarColor,
-        BarStyle bossBarStyle,
-        boolean timerVisibleToRunner,
-        boolean timerVisibleToHunters,
+        boolean notificationsEnabled,
+        int notificationCheckTicks,
+        int notificationIntervalMinutes,
         boolean analyticsEnabled,
         String analyticsFolder,
         double sampleDistance,
@@ -45,6 +50,7 @@ public record PluginSettings(
         int healthSampleIntervalTicks,
         int flushIntervalTicks,
         String mapPublisherMode,
+        String mapViewerDirectoryName,
         boolean catchupEnabled,
         double meaningfulDamageThreshold,
         int contributionWindowSeconds,
@@ -65,7 +71,7 @@ public record PluginSettings(
     public static PluginSettings from(FileConfiguration config, YamlConfiguration milestoneConfig) {
         String prefix = config.getString("messages.prefix", "&6[Manhunt]&r ");
 
-        boolean freezeDuringPrime = config.getBoolean("game.freeze-during-prime", true);
+        boolean freezeDuringPrime = config.getBoolean("game.freeze-during-prime", false);
         boolean startOnRunnerMove = config.getBoolean("game.start-on-runner-move", true);
         boolean quitAsHunterWin = config.getBoolean("game.quit-as-hunter-win", true);
         boolean autoGiveCompassesOnStart = config.getBoolean("game.auto-give-compasses-on-start", true);
@@ -76,7 +82,8 @@ public record PluginSettings(
         );
 
         boolean compassEnabled = config.getBoolean("compass.enabled", true);
-        int compassRefreshTicks = Math.max(1, config.getInt("compass.refresh-ticks", 10));
+        int compassRefreshTicks = Math.max(1, config.getInt("compass.refresh-ticks", 40));
+        double compassMinimumTargetChangeDistance = Math.max(0.5D, config.getDouble("compass.minimum-target-change-distance", 8.0D));
         DimensionTrackingMode compassMode = parseEnum(
                 config.getString("compass.mode", DimensionTrackingMode.PORTAL_ANCHOR.name()),
                 DimensionTrackingMode.class,
@@ -91,12 +98,9 @@ public record PluginSettings(
         int surroundSafeSearchRadius = config.getInt("surround.safe-search-radius", 6);
         int surroundSafeSearchVertical = config.getInt("surround.safe-search-vertical", 8);
 
-        boolean timerEnabled = config.getBoolean("timer.enabled", true);
-        int timerUpdateTicks = Math.max(1, config.getInt("timer.update-ticks", 20));
-        BarColor bossBarColor = parseEnum(config.getString("timer.bossbar.color", "BLUE"), BarColor.class, BarColor.BLUE);
-        BarStyle bossBarStyle = parseEnum(config.getString("timer.bossbar.style", "SOLID"), BarStyle.class, BarStyle.SOLID);
-        boolean timerVisibleToRunner = config.getBoolean("timer.bossbar.show-to-runner", true);
-        boolean timerVisibleToHunters = config.getBoolean("timer.bossbar.show-to-hunters", true);
+        boolean notificationsEnabled = config.getBoolean("notifications.enabled", true);
+        int notificationCheckTicks = Math.max(1, config.getInt("notifications.check-ticks", 100));
+        int notificationIntervalMinutes = Math.max(1, config.getInt("notifications.interval-minutes", 30));
 
         boolean analyticsEnabled = config.getBoolean("analytics.enabled", true);
         String analyticsFolder = config.getString("analytics.folder", "analytics");
@@ -105,7 +109,8 @@ public record PluginSettings(
         int healthSampleIntervalTicks = Math.max(1, config.getInt("analytics.health-sample-interval-ticks", 40));
         int flushIntervalTicks = Math.max(1, config.getInt("analytics.flush-interval-ticks", 200));
 
-        String mapPublisherMode = config.getString("map.publisher", "STATIC_JSON");
+        String mapPublisherMode = config.getString("map.publisher", "STATIC_WEB");
+        String mapViewerDirectoryName = config.getString("map.viewer-directory", "viewer");
 
         boolean catchupEnabled = config.getBoolean("catchup.enabled", true);
         double meaningfulDamageThreshold = Math.max(0.0D, config.getDouble("catchup.meaningful-damage-threshold", 4.0D));
@@ -129,6 +134,7 @@ public record PluginSettings(
                 endResolutionPolicy,
                 compassEnabled,
                 compassRefreshTicks,
+                compassMinimumTargetChangeDistance,
                 compassMode,
                 compassTitle,
                 compassLore,
@@ -137,12 +143,9 @@ public record PluginSettings(
                 surroundMaxRadius,
                 surroundSafeSearchRadius,
                 surroundSafeSearchVertical,
-                timerEnabled,
-                timerUpdateTicks,
-                bossBarColor,
-                bossBarStyle,
-                timerVisibleToRunner,
-                timerVisibleToHunters,
+                notificationsEnabled,
+                notificationCheckTicks,
+                notificationIntervalMinutes,
                 analyticsEnabled,
                 analyticsFolder,
                 sampleDistance,
@@ -150,6 +153,7 @@ public record PluginSettings(
                 healthSampleIntervalTicks,
                 flushIntervalTicks,
                 mapPublisherMode,
+                mapViewerDirectoryName,
                 catchupEnabled,
                 meaningfulDamageThreshold,
                 contributionWindowSeconds,
@@ -194,7 +198,7 @@ public record PluginSettings(
             }
             List<KitItem> items = new ArrayList<>();
             for (String rawItem : kitSection.getStringList("items")) {
-                String[] parts = rawItem.trim().split("\s+");
+                String[] parts = rawItem.trim().split("\\s+");
                 if (parts.length == 0) {
                     continue;
                 }

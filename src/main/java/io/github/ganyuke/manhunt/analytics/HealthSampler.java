@@ -65,7 +65,7 @@ public final class HealthSampler {
         }
         for (UUID participantId : session.participants()) {
             Player player = Bukkit.getPlayer(participantId);
-            if (player == null || !player.isOnline()) {
+            if (player == null || !player.isOnline() || player.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
                 continue;
             }
             Role role = roleService.getRole(player.getUniqueId());

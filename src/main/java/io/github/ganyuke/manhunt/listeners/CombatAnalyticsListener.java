@@ -71,6 +71,7 @@ public final class CombatAnalyticsListener implements Listener {
                 && roleService.isHunter(attackingPlayer.getUniqueId())
                 && event.getFinalDamage() > 0.0D) {
             deathstreakService.recordContribution(attackingPlayer, event.getFinalDamage());
+            matchManager.recordParticipantDamage(victim.getUniqueId(), attackingPlayer.getUniqueId(), event.getFinalDamage());
         }
     }
 
@@ -86,7 +87,7 @@ public final class CombatAnalyticsListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onParticipantDeathRecord(PlayerDeathEvent event) {
         MatchSession session = matchManager.getCurrentSession();
-        if (session == null || !session.isParticipant(event.getEntity().getUniqueId())) {
+        if (session == null || !session.isRunning() || !session.isParticipant(event.getEntity().getUniqueId())) {
             return;
         }
         Role role = roleService.getRole(event.getEntity().getUniqueId());
@@ -107,5 +108,6 @@ public final class CombatAnalyticsListener implements Listener {
                 direct == null ? null : direct.getType().name(),
                 causing == null ? null : causing.getUniqueId()
         );
+        matchManager.recordParticipantDeath(event.getEntity().getUniqueId(), role);
     }
 }

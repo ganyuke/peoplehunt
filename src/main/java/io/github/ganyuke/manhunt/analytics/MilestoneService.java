@@ -87,6 +87,9 @@ public final class MilestoneService {
     }
 
     private void evaluatePlayer(MatchSession session, Player player) {
+        if (player.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
+            return;
+        }
         Role role = roleService.getRole(player.getUniqueId());
         if (role == Role.NONE) {
             return;

@@ -5,6 +5,7 @@ import io.github.ganyuke.manhunt.game.MatchSession;
 import io.github.ganyuke.manhunt.game.Role;
 import io.github.ganyuke.manhunt.util.JsonLineWriter;
 import org.bukkit.Location;
+import io.github.ganyuke.manhunt.util.PlayerUtil;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
@@ -234,11 +235,16 @@ public final class AsyncJsonAnalyticsRecorder implements AnalyticsRecorder {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("sessionId", session.sessionId().toString());
         summary.put("runnerId", session.runnerId().toString());
+        summary.put("runnerName", PlayerUtil.name(session.runnerId()));
         List<String> hunters = new ArrayList<>();
+        List<Map<String, Object>> hunterEntries = new ArrayList<>();
         for (UUID hunterId : session.hunterIds()) {
             hunters.add(hunterId.toString());
+            hunterEntries.add(playerEntry(hunterId, "HUNTER"));
         }
         summary.put("hunterIds", hunters);
+        summary.put("runner", playerEntry(session.runnerId(), "RUNNER"));
+        summary.put("hunters", hunterEntries);
         summary.put("state", session.state().name());
         summary.put("primedAt", session.primedAt() == null ? null : session.primedAt().toString());
         summary.put("startedAt", session.startedAt() == null ? null : session.startedAt().toString());
@@ -261,17 +267,30 @@ public final class AsyncJsonAnalyticsRecorder implements AnalyticsRecorder {
         event.put("event", eventName);
         event.put("sessionId", session.sessionId().toString());
         event.put("runnerId", session.runnerId().toString());
+        event.put("runnerName", PlayerUtil.name(session.runnerId()));
         List<String> hunters = new ArrayList<>();
+        List<Map<String, Object>> hunterEntries = new ArrayList<>();
         for (UUID hunterId : session.hunterIds()) {
             hunters.add(hunterId.toString());
+            hunterEntries.add(playerEntry(hunterId, "HUNTER"));
         }
         event.put("hunterIds", hunters);
+        event.put("runner", playerEntry(session.runnerId(), "RUNNER"));
+        event.put("hunters", hunterEntries);
         event.put("state", session.state().name());
         event.put("at", Instant.now().toString());
         event.put("epochMillis", Instant.now().toEpochMilli());
         event.put("victory", session.victoryType().name());
         event.put("endReason", session.endReason());
         return event;
+    }
+
+    private Map<String, Object> playerEntry(UUID playerId, String role) {
+        Map<String, Object> player = new LinkedHashMap<>();
+        player.put("id", playerId == null ? null : playerId.toString());
+        player.put("name", playerId == null ? null : PlayerUtil.name(playerId));
+        player.put("role", role);
+        return player;
     }
 
     private Map<String, Object> locationMap(Location location) {
