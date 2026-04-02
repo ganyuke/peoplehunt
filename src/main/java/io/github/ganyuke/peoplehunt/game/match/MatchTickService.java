@@ -55,8 +55,8 @@ public class MatchTickService {
         cancelPrimeTask();
         primeTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
             PrimeContext ctx = matchManager.getPrimeContext();
-            if (ctx == null || !ctx.keepPlayersFull) return;
-            for (UUID uuid : ctx.participantIds) {
+            if (ctx == null || !ctx.keepPlayersFull()) return;
+            for (UUID uuid : ctx.participantIds()) {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null) {
                     player.setHealth(player.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue());

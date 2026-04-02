@@ -4,15 +4,16 @@ import java.util.Set;
 import java.util.UUID;
 import org.bukkit.Location;
 
-public class PrimeContext {
-    public final Location initialRunnerLocation;
-    public final boolean keepPlayersFull;
-    public final Set<UUID> participantIds;
-    public final long primedAtEpochMillis = System.currentTimeMillis();
-
-    public PrimeContext(Location initialRunnerLocation, boolean keepPlayersFull, Set<UUID> participantIds) {
-        this.initialRunnerLocation = initialRunnerLocation;
-        this.keepPlayersFull = keepPlayersFull;
-        this.participantIds = participantIds;
+/**
+ * Hold context for a primed match (started with /manhunt prime)
+ */
+public record PrimeContext(
+        Location initialRunnerLocation,
+        boolean keepPlayersFull,
+        Set<UUID> participantIds,
+        long primedAtEpochMillis
+) {
+    public static PrimeContext create(Location initialRunnerLocation, boolean keepPlayersFull, Set<UUID> participantIds) {
+        return new PrimeContext(initialRunnerLocation, keepPlayersFull, participantIds, System.currentTimeMillis());
     }
 }

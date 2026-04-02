@@ -19,7 +19,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -27,6 +26,13 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class MatchManager {
+    private static final String HEADER_LINE = "<gray>———— [ <gold><b>%s</b></gold> ] ————</gray>";
+    private static final String FOOTER_LINE = "<gray>———————————————————————</gray>";
+    private static final String SECTION_PREFIX = "<gray><b>%s</b></gray>";
+    private static final String LABEL_PREFIX = "<yellow>%s:</yellow> ";
+    private static final String VALUE = "<white>%s</white>";
+    private static final String BULLET = " <dark_gray>»</dark_gray> ";
+
     private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
     private final PersistentStateStore stateStore;
@@ -188,7 +194,11 @@ public final class MatchManager {
                 player.setExp(0.0f);
             }
         }
-        primeContext = new PrimeContext(runner.getLocation().clone(), keepPlayersFullOverride == null ? config.primeKeepPlayersFull() : keepPlayersFullOverride, participants);
+        primeContext = PrimeContext.create(
+                runner.getLocation().clone(),
+                keepPlayersFullOverride == null ? config.primeKeepPlayersFull() : keepPlayersFullOverride,
+                participants
+        );
         tickService.startPrimeTask();
     }
 
@@ -207,14 +217,24 @@ public final class MatchManager {
         }
 
         List<ReportService.ParticipantSeed> participants = new ArrayList<>();
-        participants.add(new ReportService.ParticipantSeed(runner.getUniqueId(), runner.getName(), Role.RUNNER.name(), false, false));
+        participants.add(new ReportService.ParticipantSeed(
+                runner.getUniqueId(), runner.getName(), Role.RUNNER.name(), false, false
+        ));
         for (UUID hunterId : hunterIds) {
             Player hunter = Bukkit.getPlayer(hunterId);
-            if (hunter != null) participants.add(new ReportService.ParticipantSeed(hunter.getUniqueId(), hunter.getName(), Role.HUNTER.name(), false, false));
+            if (hunter != null) {
+                participants.add(new ReportService.ParticipantSeed(
+                        hunter.getUniqueId(), hunter.getName(), Role.HUNTER.name(), false, false
+                ));
+            }
         }
         for (UUID spectatorId : spectatorIds) {
             Player spectator = Bukkit.getPlayer(spectatorId);
-            if (spectator != null) participants.add(new ReportService.ParticipantSeed(spectator.getUniqueId(), spectator.getName(), Role.SPECTATOR.name(), false, true));
+            if (spectator != null) {
+                participants.add(new ReportService.ParticipantSeed(
+                        spectator.getUniqueId(), spectator.getName(), Role.SPECTATOR.name(), false, true
+                ));
+            }
         }
 
         UUID reportId = reportService.startSession(
@@ -222,7 +242,15 @@ public final class MatchManager {
                 stateData.activeKitId, config.reportStorageFormat(), participants
         );
 
-        activeSession = new MatchSession(reportId, System.currentTimeMillis(), runner.getUniqueId(), hunterIds, spectatorIds, stateData.activeKitId, stateData.keepInventoryMode);
+        activeSession = new MatchSession(
+                reportId,
+                System.currentTimeMillis(),
+                runner.getUniqueId(),
+                hunterIds,
+                spectatorIds,
+                stateData.activeKitId,
+                stateData.keepInventoryMode
+        );
         activeSession.nextElapsedAnnouncementMinutes = Math.max(1, config.elapsedAnnouncementMinutes());
         activeSession.currentRunnerLocation = runner.getLocation().clone();
 
@@ -275,22 +303,34 @@ public final class MatchManager {
         return activeSession == null ? Optional.empty() : finishMatch(MatchOutcome.RUNNER_VICTORY);
     }
 
+    private void announceVictoryNextTick(String summary) {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            broadcast(Text.mm(summary));
+        }, 1L);
+    }
+
     private Optional<ReportService.FinishResult> finishMatch(MatchOutcome outcome) throws IOException {
         tickService.stopRuntimeTasks();
-        activeSession = null; // Frees match state memory!
+        activeSession = null;
 
         Optional<ReportService.FinishResult> result = reportService.finish(outcome);
         broadcast(Text.mm("<green>Manhunt ended."));
         result.ifPresent(finish -> {
-            Component stats = buildFinishedStatsComponent(finish.snapshot());
-            broadcast(stats);
+            String summary = buildFinishedStatsMessage(finish.snapshot());
+            announceVictoryNextTick(summary);
             stateData.lastStatusSnapshot = new PersistentStateStore.LastStatusSnapshot(
-                    finish.indexEntry().reportId(), stateData.selectionGeneration,
-                    finish.indexEntry().startedAtEpochMillis(), finish.indexEntry().endedAtEpochMillis(),
-                    outcome, finish.indexEntry().runnerUuid(), finish.indexEntry().runnerName(),
+                    finish.indexEntry().reportId(),
+                    stateData.selectionGeneration,
+                    finish.indexEntry().startedAtEpochMillis(),
+                    finish.indexEntry().endedAtEpochMillis(),
+                    outcome,
+                    finish.indexEntry().runnerUuid(),
+                    finish.indexEntry().runnerName(),
                     Text.formatTimestamp(finish.indexEntry().startedAtEpochMillis()),
-                    Text.formatDurationMillis(finish.indexEntry().endedAtEpochMillis() - finish.indexEntry().startedAtEpochMillis()),
-                    buildFinishedStatsMiniMessage(finish.snapshot())
+                    Text.formatDurationMillis(
+                            finish.indexEntry().endedAtEpochMillis() - finish.indexEntry().startedAtEpochMillis()
+                    ),
+                    summary
             );
             persistQuietly();
         });
@@ -298,11 +338,15 @@ public final class MatchManager {
     }
 
     public boolean isRunner(UUID uuid) {
-        return activeSession != null ? activeSession.roles.get(uuid) == Role.RUNNER : Objects.equals(stateData.runnerUuid, uuid);
+        return activeSession != null
+                ? activeSession.roles.get(uuid) == Role.RUNNER
+                : Objects.equals(stateData.runnerUuid, uuid);
     }
 
     public boolean isHunter(UUID uuid) {
-        return activeSession != null ? activeSession.roles.get(uuid) == Role.HUNTER : stateData.explicitHunters.contains(uuid);
+        return activeSession != null
+                ? activeSession.roles.get(uuid) == Role.HUNTER
+                : stateData.explicitHunters.contains(uuid);
     }
 
     public boolean isParticipant(UUID uuid) {
@@ -314,8 +358,16 @@ public final class MatchManager {
     }
 
     public Collection<Player> onlineHunters() {
-        if (activeSession == null) return resolveNextHunterUuids().stream().map(Bukkit::getPlayer).filter(Objects::nonNull).toList();
-        return activeSession.hunterIds.stream().map(Bukkit::getPlayer).filter(Objects::nonNull).toList();
+        if (activeSession == null) {
+            return resolveNextHunterUuids().stream()
+                    .map(Bukkit::getPlayer)
+                    .filter(Objects::nonNull)
+                    .toList();
+        }
+        return activeSession.hunterIds.stream()
+                .map(Bukkit::getPlayer)
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     public void surroundHunters(double minRadius, Double maxRadius) {
@@ -337,11 +389,15 @@ public final class MatchManager {
         if (uuid == null) return "unset";
         Player online = Bukkit.getPlayer(uuid);
         if (online != null) return online.getName();
-        return Bukkit.getOfflinePlayer(uuid).getName() == null ? uuid.toString() : Bukkit.getOfflinePlayer(uuid).getName();
+        return Bukkit.getOfflinePlayer(uuid).getName() == null
+                ? uuid.toString()
+                : Bukkit.getOfflinePlayer(uuid).getName();
     }
 
     private void ensureNotActive() {
-        if (activeSession != null || primeContext != null) throw new IllegalStateException("Stop or finish the current session first.");
+        if (activeSession != null || primeContext != null) {
+            throw new IllegalStateException("Stop or finish the current session first.");
+        }
     }
 
     private Player requireOnlineRunner() {
@@ -402,8 +458,6 @@ public final class MatchManager {
         return new ArrayList<>(players);
     }
 
-    // --- Add/Remove Participants Mid-Match ---
-
     public void addHunterToActiveMatch(Player player) {
         if (activeSession == null || player == null || player.getUniqueId().equals(activeSession.runnerUuid)) return;
         UUID uuid = player.getUniqueId();
@@ -432,91 +486,150 @@ public final class MatchManager {
         }
     }
 
-    // --- Status Components ---
-
     public Component buildStatusComponent() {
         if (activeSession != null) {
-            return Text.lines(List.of(
-                    Component.text("PeopleHunt status", NamedTextColor.GOLD),
-                    Component.text("State: active", NamedTextColor.YELLOW),
-                    Component.text("Runner: " + nameOf(stateData.runnerUuid), NamedTextColor.GRAY),
-                    Component.text("Hunters: " + namesOf(activeSession.hunterIds), NamedTextColor.GRAY),
-                    Component.text("Spectators: " + namesOf(activeSession.spectatorIds), NamedTextColor.GRAY),
-                    Component.text("Started: " + Text.formatTimestamp(activeSession.startedAtEpochMillis), NamedTextColor.GRAY),
-                    Component.text("Elapsed: " + Text.formatDurationMillis(System.currentTimeMillis() - activeSession.startedAtEpochMillis), NamedTextColor.GRAY),
-                    Component.text("Keep inventory: " + activeSession.keepInventoryMode, NamedTextColor.GRAY),
-                    Component.text("Kit: " + (activeSession.activeKitId == null ? "none" : activeSession.activeKitId), NamedTextColor.GRAY)
-            ));
+            return Text.mm(buildActiveStatusMessage());
         }
         if (primeContext != null) {
-            return Text.lines(List.of(
-                    Component.text("PeopleHunt status", NamedTextColor.GOLD),
-                    Component.text("State: primed", NamedTextColor.YELLOW),
-                    Component.text("Runner: " + nameOf(stateData.runnerUuid), NamedTextColor.GRAY),
-                    Component.text("Hunters: " + namesOf(resolveNextHunterUuids()), NamedTextColor.GRAY),
-                    Component.text("Primed at: " + Text.formatTimestamp(primeContext.primedAtEpochMillis), NamedTextColor.GRAY),
-                    Component.text("Keep full: " + primeContext.keepPlayersFull, NamedTextColor.GRAY)
-            ));
+            return Text.mm(buildPrimedStatusMessage());
         }
-        if (stateData.lastStatusSnapshot != null && stateData.lastStatusSnapshot.selectionGeneration() == stateData.selectionGeneration) {
+        if (stateData.lastStatusSnapshot != null
+                && stateData.lastStatusSnapshot.selectionGeneration() == stateData.selectionGeneration) {
             return Text.mm(stateData.lastStatusSnapshot.summaryText());
         }
-        return Text.lines(List.of(
-                Component.text("PeopleHunt status", NamedTextColor.GOLD),
-                Component.text("State: idle", NamedTextColor.YELLOW),
-                Component.text("Pending runner: " + nameOf(stateData.runnerUuid), NamedTextColor.GRAY),
-                Component.text("Pending hunters: " + (stateData.explicitHunters.isEmpty() ? "all online except runner" : namesOf(stateData.explicitHunters)), NamedTextColor.GRAY),
-                Component.text("Keep inventory: " + stateData.keepInventoryMode, NamedTextColor.GRAY),
-                Component.text("Kit: " + (stateData.activeKitId == null ? "none" : stateData.activeKitId), NamedTextColor.GRAY)
+        return Text.mm(buildIdleStatusMessage());
+    }
+
+    private String buildActiveStatusMessage() {
+        return messageBlock("PEOPLEHUNT STATUS", List.of(
+                statusLine("State", "<green><b>ACTIVE</b></green>"),
+                statusLine("Runner", white(nameOf(stateData.runnerUuid))),
+                statusLine("Hunters", white(namesOf(activeSession.hunterIds))),
+                statusLine("Spectators", white(namesOf(activeSession.spectatorIds))),
+                statusLine("Started", white(Text.formatTimestamp(activeSession.startedAtEpochMillis))),
+                statusLine("Elapsed", white(Text.formatDurationMillis(
+                        System.currentTimeMillis() - activeSession.startedAtEpochMillis
+                ))),
+                statusLine("Keep inventory", white(String.valueOf(activeSession.keepInventoryMode))),
+                statusLine("Kit", white(displayKit(activeSession.activeKitId)))
         ));
     }
 
-    private Component buildFinishedStatsComponent(ReportModels.ViewerSnapshot snapshot) {
-        List<Component> lines = new ArrayList<>();
-        lines.add(Component.text("Match statistics", NamedTextColor.GOLD));
-        lines.add(Component.text("Victory: " + snapshot.metadata().outcome(), NamedTextColor.YELLOW));
-        lines.add(Component.text("Runner: " + snapshot.metadata().runnerName(), NamedTextColor.GRAY));
-        lines.add(Component.text("Match time: " + Text.formatDurationMillis(snapshot.metadata().endedAtEpochMillis() - snapshot.metadata().startedAtEpochMillis()), NamedTextColor.GRAY));
-        for (ReportModels.ParticipantStats stat : snapshot.stats()) {
-            lines.add(Component.text(nameOf(stat.uuid()) + " - deaths: " + stat.deaths() + ", player kills: " + stat.playerKills(), NamedTextColor.GRAY));
-        }
-        return Text.lines(lines);
+    private String buildPrimedStatusMessage() {
+        return messageBlock("PEOPLEHUNT STATUS", List.of(
+                statusLine("State", "<aqua><b>PRIMED</b></aqua>"),
+                statusLine("Runner", white(nameOf(stateData.runnerUuid))),
+                statusLine("Hunters", white(namesOf(resolveNextHunterUuids()))),
+                statusLine("Primed at", white(Text.formatTimestamp(primeContext.primedAtEpochMillis()))),
+                statusLine("Keep full", white(String.valueOf(primeContext.keepPlayersFull())))
+        ));
     }
 
-    private String buildFinishedStatsMiniMessage(ReportModels.ViewerSnapshot snapshot) {
+    private String buildIdleStatusMessage() {
+        return messageBlock("PEOPLEHUNT STATUS", List.of(
+                statusLine("State", "<gray><b>IDLE</b></gray>"),
+                statusLine("Pending runner", white(nameOf(stateData.runnerUuid))),
+                statusLine(
+                        "Pending hunters",
+                        white(stateData.explicitHunters.isEmpty()
+                                ? "all online except runner"
+                                : namesOf(stateData.explicitHunters))
+                ),
+                statusLine("Keep inventory", white(String.valueOf(stateData.keepInventoryMode))),
+                statusLine("Kit", white(displayKit(stateData.activeKitId)))
+        ));
+    }
+
+    private String buildFinishedStatsMessage(ReportModels.ViewerSnapshot snapshot) {
         long duration = snapshot.metadata().endedAtEpochMillis() - snapshot.metadata().startedAtEpochMillis();
-        String outcomeColor = snapshot.metadata().outcome().contains("HUNTER") ? "<red>" : "<green>";
 
+        List<String> lines = new ArrayList<>();
+        lines.add(statusLine("Result", coloredOutcome(snapshot.metadata().outcome())));
+        lines.add(statusLine("Runner", white(snapshot.metadata().runnerName())));
+        lines.add(
+                statusLine(
+                        "Time",
+                        white(Text.formatDurationMillis(duration))
+                                + " <dark_gray>(started: "
+                                + Text.formatTimestamp(snapshot.metadata().startedAtEpochMillis())
+                                + ")</dark_gray>"
+                )
+        );
+        lines.add("");
+        lines.add(section("Participant Performance"));
+        lines.addAll(snapshot.stats().stream()
+                .map(this::participantStatLine)
+                .toList());
+
+        return messageBlock("POST-MATCH STATS", lines);
+    }
+
+    private String participantStatLine(ReportModels.ParticipantStats stat) {
+        return BULLET
+                + white(nameOf(stat.uuid()))
+                + " <dark_gray>|</dark_gray> <red>☠ "
+                + stat.deaths()
+                + "</red> <aqua>⚔ "
+                + stat.playerKills()
+                + "</aqua>";
+    }
+
+    private String messageBlock(String title, List<String> lines) {
         StringBuilder builder = new StringBuilder();
+        builder.append(String.format(HEADER_LINE, title)).append("\n");
 
-        // 1. Header with stylized separator
-        builder.append("<gray>————————————————— [ <gold><b>POST-MATCH STATS</b></gold> ] —————————————————</gray>\n");
-
-        // 2. Summary Section (Label: Value format)
-        builder.append("<yellow>Result:</yellow> ").append(outcomeColor).append("<b>").append(snapshot.metadata().outcome()).append("</b></color>\n");
-        builder.append("<yellow>Runner:</yellow> <white>").append(snapshot.metadata().runnerName()).append("</white>\n");
-        builder.append("<yellow>Time:</yellow> <white>").append(Text.formatDurationMillis(duration)).append("</white> <dark_gray>(started: ").append(Text.formatTimestamp(snapshot.metadata().startedAtEpochMillis())).append(")</dark_gray>\n");
-
-        // 3. Participant Section Header
-        builder.append("\n<gray><b>Participant Performance:</b></gray>\n");
-
-        // 4. Participant List with Icons
-        for (ReportModels.ParticipantStats stat : snapshot.stats()) {
-            String playerName = nameOf(stat.uuid());
-
-            builder.append(" <dark_gray>»</dark_gray> <white>").append(playerName).append("</white>")
-                    .append(" <dark_gray>|</dark_gray> <red>☠ ").append(stat.deaths()).append("</red>") // Deaths Icon
-                    .append(" <aqua>⚔ ").append(stat.playerKills()).append("</aqua>")             // Kills Icon
-                    .append("\n");
+        for (int i = 0; i < lines.size(); i++) {
+            builder.append(lines.get(i));
+            if (i < lines.size() - 1) {
+                builder.append("\n");
+            }
         }
 
-        builder.append("<gray>————————————————————————————————————————————————————</gray>");
-
+        builder.append("\n").append(FOOTER_LINE);
         return builder.toString();
     }
 
+    private String statusLine(String label, String value) {
+        return String.format(LABEL_PREFIX, label) + value;
+    }
+
+    private String section(String title) {
+        return String.format(SECTION_PREFIX, title + ":");
+    }
+
+    private String displayOutcome(String outcome) {
+        return switch (outcome) {
+            case "HUNTER_VICTORY" -> "Hunter Victory";
+            case "RUNNER_VICTORY" -> "Runner Victory";
+            case "INCONCLUSIVE" -> "Inconclusive";
+            default -> outcome.replace('_', ' ');
+        };
+    }
+
+    private String white(String value) {
+        return String.format(VALUE, value);
+    }
+
+    private String coloredOutcome(String outcome) {
+        String pretty = displayOutcome(outcome);
+
+        if (outcome.contains("HUNTER")) {
+            return "<red><b>" + pretty + "</b></red>";
+        }
+        if (outcome.contains("RUNNER")) {
+            return "<green><b>" + pretty + "</b></green>";
+        }
+        return "<yellow><b>" + pretty + "</b></yellow>";
+    }
+
+    private String displayKit(String kitId) {
+        return kitId == null ? "none" : kitId;
+    }
+
     private String namesOf(Collection<UUID> uuids) {
-        return (uuids == null || uuids.isEmpty()) ? "none" : uuids.stream().map(this::nameOf).collect(Collectors.joining(", "));
+        return (uuids == null || uuids.isEmpty())
+                ? "none"
+                : uuids.stream().map(this::nameOf).collect(Collectors.joining(", "));
     }
 
     public Optional<Location> consumeEndPortalPrompt(UUID uuid) {

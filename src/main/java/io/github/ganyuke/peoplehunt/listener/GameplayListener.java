@@ -2,28 +2,20 @@ package io.github.ganyuke.peoplehunt.listener;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakTier;
+import io.github.ganyuke.peoplehunt.game.match.AttributionManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession.Attribution;
-import io.github.ganyuke.peoplehunt.game.match.MatchSession.ProjectileAttribution;
-import io.github.ganyuke.peoplehunt.game.match.MatchSession.BlockKey;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
-import org.bukkit.block.Block;
-import org.bukkit.entity.Entity;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Projectile;
-import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -40,43 +32,30 @@ import org.bukkit.event.player.PlayerAdvancementDoneEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
-import org.bukkit.inventory.ItemStack;
-import org.bukkit.plugin.java.JavaPlugin;
 
 public final class GameplayListener implements Listener {
-    private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
     private final MatchManager matchManager;
     private final ReportService reportService;
-    private int tickCounter = 0;
+    private final AttributionManager attributionManager;
 
-    public GameplayListener(JavaPlugin plugin, PeopleHuntConfig config, MatchManager matchManager, ReportService reportService) {
-        this.plugin = plugin;
+    public GameplayListener(
+            PeopleHuntConfig config,
+            MatchManager matchManager,
+            ReportService reportService,
+            AttributionManager attributionManager
+    ) {
         this.config = config;
         this.matchManager = matchManager;
         this.reportService = reportService;
-        Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this::tickTasks, 1L, 1L);
+        this.attributionManager = attributionManager;
     }
 
-    private void tickTasks() {
-        MatchSession session = matchManager.getSession();
-        if (session == null) return;
+    /* CHAT LOG RECORDING */
 
-        Iterator<Map.Entry<UUID, MatchSession.ProjectileAttribution>> iterator = session.trackedProjectiles.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<UUID, MatchSession.ProjectileAttribution> entry = iterator.next();
-            Entity entity = Bukkit.getEntity(entry.getKey());
-            if (!(entity instanceof Projectile projectile) || !projectile.isValid()) {
-                reportService.finishProjectile(entry.getKey(), entity == null ? null : entity.getLocation());
-                iterator.remove();
-                continue;
-            }
-            reportService.recordProjectilePoint(entry.getKey(), projectile.getLocation());
-        }
-
-        if (++tickCounter % 20 == 0) session.cleanupOldHazards();
-    }
-
+    /**
+     * Start recording the chat during the duration of the manhunt for the after-action report.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onChat(AsyncChatEvent event) {
         if (!matchManager.hasActiveMatch()) return;
@@ -84,6 +63,9 @@ public final class GameplayListener implements Listener {
         reportService.recordChat("chat", event.getPlayer().getUniqueId(), event.getPlayer().getName(), line);
     }
 
+    /**
+     * Record advancements to mimic the chat for the after-action report.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAdvancement(PlayerAdvancementDoneEvent event) {
         if (!config.captureAdvancements() || !matchManager.hasActiveMatch() || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
@@ -93,33 +75,46 @@ public final class GameplayListener implements Listener {
         reportService.recordTimeline(event.getPlayer().getUniqueId(), event.getPlayer().getName(), "advancement", key);
     }
 
+    /* PROJECTILE TRACKING */
+
+    /**
+     * Track path of projectiles fired by players so we can visualize bow shots
+     * in the after-action report.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onProjectileLaunch(ProjectileLaunchEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session == null || !(event.getEntity().getShooter() instanceof Player player) || !matchManager.isParticipant(player.getUniqueId())) return;
-
-        String weapon = player.getInventory().getItemInMainHand() == null ? event.getEntity().getType().name() : player.getInventory().getItemInMainHand().getType().name();
-        session.trackedProjectiles.put(event.getEntity().getUniqueId(), new MatchSession.ProjectileAttribution(player.getUniqueId(), player.getName(), weapon));
-        reportService.startProjectile(event.getEntity().getUniqueId(), player.getUniqueId(), player.getName(), event.getEntity().getType().name(), event.getEntity().getLocation());
+        if (!(event.getEntity().getShooter() instanceof Player player)) return;
+        attributionManager.trackProjectileLaunch(event.getEntity(), player);
     }
 
+    /**
+     * Track when we can clean up tracking for projectiles paths.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onProjectileHit(ProjectileHitEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session != null && session.trackedProjectiles.remove(event.getEntity().getUniqueId()) != null) {
-            reportService.finishProjectile(event.getEntity().getUniqueId(), event.getEntity().getLocation());
-        }
+        attributionManager.trackProjectileHit(event.getEntity());
     }
 
+    /* DEATH TRACKING */
+
+    /**
+     * Only player victims matter here because the listener is producing player-centric match
+     * reports, and attribution is resolved first so downstream reporting uses one consistent source.
+     *
+     * Deathstreak progress is updated on damage rather than on kill because the reset rule is
+     * based on total damage dealt during a life, not just whether a kill happened.
+     *
+     * First-hit and first-blood are recorded here because direct combat damage is the earliest
+     * reliable point where those combat milestones become true.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByEntity(EntityDamageByEntityEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !(event.getEntity() instanceof Player victim)) return;
 
-        Attribution attribution = resolveEntityAttribution(session, event.getDamager());
+        Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution == null) return;
 
-        session.recentVictimAttribution.put(victim.getUniqueId(), attribution);
         reportService.recordDamage(
                 attribution.playerUuid(), attribution.playerName(), victim.getUniqueId(), victim.getName(),
                 event.getCause().name(), event.getFinalDamage(), attribution.weapon(), attribution.projectileUuid(),
@@ -130,11 +125,20 @@ public final class GameplayListener implements Listener {
             MatchSession.DeathstreakState state = session.deathstreaks.get(attribution.playerUuid());
             if (state != null) {
                 state.damageThisLife += event.getFinalDamage();
-                DeathstreakTier activeTier = config.deathstreakTiers().stream().filter(t -> state.streakDeaths >= t.deaths()).max(java.util.Comparator.comparingInt(DeathstreakTier::deaths)).orElse(null);
+                DeathstreakTier activeTier = config.deathstreakTiers().stream()
+                        .filter(t -> state.streakDeaths >= t.deaths())
+                        .max(java.util.Comparator.comparingInt(DeathstreakTier::deaths))
+                        .orElse(null);
+
                 if (activeTier != null && state.damageThisLife >= activeTier.damageToReset()) {
                     state.streakDeaths = 0;
                     state.damageThisLife = 0.0;
-                    reportService.recordTimeline(attribution.playerUuid(), attribution.playerName(), "deathstreak", "deathstreak reset by dealing enough damage");
+                    reportService.recordTimeline(
+                            attribution.playerUuid(),
+                            attribution.playerName(),
+                            "deathstreak",
+                            "deathstreak reset by dealing enough damage"
+                    );
                 }
             }
         }
@@ -146,159 +150,200 @@ public final class GameplayListener implements Listener {
         }
     }
 
+    /**
+     * Block-based damage is handled separately because its source is less direct than entity damage.
+     * It still goes through the attribution manager so lava, beds, anchors, and similar hazards
+     * can be credited consistently.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByBlock(EntityDamageByBlockEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !(event.getEntity() instanceof Player victim)) return;
 
-        Attribution attribution = resolveBlockAttribution(session, event.getDamager(), event.getCause(), victim.getLocation());
+        Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution == null) return;
 
-        session.recentVictimAttribution.put(victim.getUniqueId(), attribution);
-        reportService.recordDamage(attribution.playerUuid(), attribution.playerName(), victim.getUniqueId(), victim.getName(), event.getCause().name(), event.getFinalDamage(), attribution.weapon(), attribution.projectileUuid(), attribution.location(), victim.getLocation());
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onGenericDamage(EntityDamageEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session == null || event instanceof EntityDamageByEntityEvent || event instanceof EntityDamageByBlockEvent || !(event.getEntity() instanceof Player victim)) return;
-
-        Attribution attribution = session.recentVictimAttribution.get(victim.getUniqueId());
-        if (attribution == null) attribution = resolveExplosionAttribution(session, victim.getLocation());
-        if (attribution == null) return;
-
-        reportService.recordDamage(attribution.playerUuid(), attribution.playerName(), victim.getUniqueId(), victim.getName(), event.getCause().name(), event.getFinalDamage(), attribution.weapon(), attribution.projectileUuid(), attribution.location(), victim.getLocation());
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR)
-    public void onPlayerDeath(PlayerDeathEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session == null) return;
-
-        Player player = event.getPlayer();
-        MatchSession.Attribution attribution = session.recentVictimAttribution.remove(player.getUniqueId());
-        if (attribution == null) attribution = resolveDeathAttribution(session, player);
-
-        String cause = player.getLastDamageCause() == null ? "UNKNOWN" : player.getLastDamageCause().getCause().name();
-        reportService.recordDeath(
-                player.getUniqueId(), player.getName(),
-                attribution == null ? null : attribution.playerUuid(), attribution == null ? null : attribution.playerName(),
-                cause, attribution == null ? null : attribution.weapon(),
-                player.getLocation(), event.deathMessage()
+        reportService.recordDamage(
+                attribution.playerUuid(),
+                attribution.playerName(),
+                victim.getUniqueId(),
+                victim.getName(),
+                event.getCause().name(),
+                event.getFinalDamage(),
+                attribution.weapon(),
+                attribution.projectileUuid(),
+                attribution.location(),
+                victim.getLocation()
         );
     }
 
+    /**
+     * Generic damage is only used for cases not already covered by the more specific damage events.
+     * That avoids double-recording the same hit while still allowing delayed damage like fire tick
+     * to inherit earlier attribution.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onGenericDamage(EntityDamageEvent event) {
+        if (event instanceof EntityDamageByEntityEvent || event instanceof EntityDamageByBlockEvent) return;
+        if (!(event.getEntity() instanceof Player victim)) return;
+
+        Attribution attribution = attributionManager.resolveGenericDamage(victim);
+        if (attribution == null) return;
+
+        reportService.recordDamage(
+                attribution.playerUuid(),
+                attribution.playerName(),
+                victim.getUniqueId(),
+                victim.getName(),
+                event.getCause().name(),
+                event.getFinalDamage(),
+                attribution.weapon(),
+                attribution.projectileUuid(),
+                attribution.location(),
+                victim.getLocation()
+        );
+    }
+
+    /**
+     * Death first consumes any recent attribution because the most recent confirmed attacker is
+     * usually more reliable than reconstructing causality after the fact from the last damage event alone.
+     *
+     * The fallback resolver still exists because some deaths are delayed or indirect and may not have
+     * a directly consumed attribution entry by the time the death event fires.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST) // need HIGHEST here to update the death count reporting BEFORE MatchLifecycleListener
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        Player player = event.getPlayer();
+
+        Attribution attribution = attributionManager.consumeRecentVictimAttribution(player.getUniqueId());
+        if (attribution == null) {
+            attribution = attributionManager.resolveDeathAttribution(player);
+        }
+
+        String cause = player.getLastDamageCause() == null
+                ? "UNKNOWN"
+                : player.getLastDamageCause().getCause().name();
+
+        reportService.recordDeath(
+                player.getUniqueId(),
+                player.getName(),
+                attribution == null ? null : attribution.playerUuid(),
+                attribution == null ? null : attribution.playerName(),
+                cause,
+                attribution == null ? null : attribution.weapon(),
+                player.getLocation(),
+                event.deathMessage()
+        );
+    }
+
+    /**
+     * Dimension milestones are recorded on world change because entering the Nether or End is
+     * a meaningful progression signal in this game mode and should only be counted for participants.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onWorldChange(PlayerChangedWorldEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
-        org.bukkit.World.Environment env = event.getPlayer().getWorld().getEnvironment();
-        if (env == org.bukkit.World.Environment.NETHER) recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_nether", "Entered the Nether");
-        if (env == org.bukkit.World.Environment.THE_END) recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_end", "Entered the End");
+
+        World.Environment env = event.getPlayer().getWorld().getEnvironment();
+        switch (env) {
+            case NETHER:
+                recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_nether", "Entered the Nether");
+                return;
+            case THE_END:
+                recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_end", "Entered the End");
+        }
     }
 
+    /**
+     * Block break milestones are based on progression materials because they act as simple,
+     * low-cost signals for early-game, mid-game, and gear progression in the match timeline.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockBreak(BlockBreakEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
 
         Material type = event.getBlock().getType();
-        if (Tag.LOGS.isTagged(type)) recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_wood", "First wood");
-        if (type == Material.IRON_ORE || type == Material.DEEPSLATE_IRON_ORE) recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_iron", "First iron");
-        if (type == Material.DIAMOND_ORE || type == Material.DEEPSLATE_DIAMOND_ORE) recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_diamond", "First diamond");
+        if (Tag.LOGS.isTagged(type)) {
+            recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_wood", "First wood");
+        }
+        if (type == Material.IRON_ORE || type == Material.DEEPSLATE_IRON_ORE) {
+            recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_iron", "First iron");
+        }
+        if (type == Material.DIAMOND_ORE || type == Material.DEEPSLATE_DIAMOND_ORE) {
+            recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_diamond", "First diamond");
+        }
     }
 
+    /**
+     * Iron can be acquired without mining the ore directly, so pickup also awards the iron milestone.
+     * That avoids undercounting progression when loot, smelting, or teammate item flow is involved.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPickup(EntityPickupItemEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !(event.getEntity() instanceof Player player) || !matchManager.isParticipant(player.getUniqueId())) return;
 
         Material type = event.getItem().getItemStack().getType();
-        if (type == Material.IRON_INGOT || type == Material.RAW_IRON) recordMilestoneIfAbsent(session, player.getUniqueId(), player.getName(), "first_iron", "First iron");
+        if (type == Material.IRON_INGOT || type == Material.RAW_IRON) {
+            recordMilestoneIfAbsent(session, player.getUniqueId(), player.getName(), "first_iron", "First iron");
+        }
     }
 
+    /**
+     * Lava placement is tracked at placement time because later lava damage no longer carries enough
+     * information by itself to identify who created the hazard.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlace(BlockPlaceEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session == null || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
-
         if (event.getBlockPlaced().getType() == Material.LAVA || event.getBlockPlaced().getType() == Material.LAVA_CAULDRON) {
-            session.lavaSources.put(BlockKey.of(event.getBlockPlaced()), new Attribution(event.getPlayer().getUniqueId(), event.getPlayer().getName(), "LAVA_BUCKET", null, event.getPlayer().getLocation(), System.currentTimeMillis()));
+            attributionManager.trackPlacedLava(event.getPlayer(), event.getBlockPlaced());
         }
     }
 
+    /**
+     * Bucket empty is also tracked because lava placement can surface through bucket events and the
+     * attribution system needs to capture the hazard at creation time, not when damage happens later.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBucket(PlayerBucketEmptyEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session == null || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
-
         if (event.getBucket() == Material.LAVA_BUCKET) {
-            session.lavaSources.put(BlockKey.of(event.getBlock()), new Attribution(event.getPlayer().getUniqueId(), event.getPlayer().getName(), "LAVA_BUCKET", null, event.getPlayer().getLocation(), System.currentTimeMillis()));
+            attributionManager.trackPlacedLava(event.getPlayer(), event.getBlock());
         }
     }
 
+    /**
+     * Beds and respawn anchors explode only in certain dimensions, so the listener records those
+     * interactions up front. That is necessary because the eventual explosion damage event does not
+     * inherently remember who triggered the hazard.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
-        MatchSession session = matchManager.getSession();
-        if (session == null || event.getClickedBlock() == null || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
+        if (event.getClickedBlock() == null) return;
+        if (!matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
 
         Material type = event.getClickedBlock().getType();
-        boolean bedExplodes = type.name().endsWith("_BED") && event.getPlayer().getWorld().getEnvironment() != org.bukkit.World.Environment.NORMAL;
-        boolean anchorExplodes = type == Material.RESPAWN_ANCHOR && event.getPlayer().getWorld().getEnvironment() != org.bukkit.World.Environment.NETHER;
-        if (bedExplodes || anchorExplodes) {
-            session.recentExplosiveHazards.add(new Attribution(event.getPlayer().getUniqueId(), event.getPlayer().getName(), bedExplodes ? "BED_EXPLOSION" : "RESPAWN_ANCHOR", null, event.getClickedBlock().getLocation(), System.currentTimeMillis()));
+        boolean bedExplodes = type.name().endsWith("_BED")
+                && event.getPlayer().getWorld().getEnvironment() != org.bukkit.World.Environment.NORMAL;
+        boolean anchorExplodes = type == Material.RESPAWN_ANCHOR
+                && event.getPlayer().getWorld().getEnvironment() != org.bukkit.World.Environment.NETHER;
+
+        if (bedExplodes) {
+            attributionManager.trackExplosiveHazard(event.getPlayer(), "BED_EXPLOSION", event.getClickedBlock().getLocation());
+        } else if (anchorExplodes) {
+            attributionManager.trackExplosiveHazard(event.getPlayer(), "RESPAWN_ANCHOR", event.getClickedBlock().getLocation());
         }
     }
 
+    /**
+     * Milestones are stored as a per-player set so each milestone is reported once.
+     * The report layer should show progression events, not repeated noise from the same achievement.
+     */
     private void recordMilestoneIfAbsent(MatchSession session, UUID uuid, String name, String key, String description) {
         Set<String> playerMilestones = session.milestones.computeIfAbsent(uuid, ignored -> new HashSet<>());
-        if (playerMilestones.add(key)) reportService.recordMilestone(uuid, name, key, description);
-    }
-
-    private Attribution resolveEntityAttribution(MatchSession session, Entity damager) {
-        if (damager instanceof Player player && matchManager.isParticipant(player.getUniqueId())) return new Attribution(player.getUniqueId(), player.getName(), weaponName(player.getInventory().getItemInMainHand()), null, player.getLocation(), System.currentTimeMillis());
-        if (damager instanceof Projectile projectile) {
-            ProjectileAttribution tracked = session.trackedProjectiles.get(projectile.getUniqueId());
-            if (tracked != null) return new Attribution(tracked.playerUuid(), tracked.playerName(), tracked.weapon(), projectile.getUniqueId(), projectile.getLocation(), System.currentTimeMillis());
-            if (projectile.getShooter() instanceof Player player && matchManager.isParticipant(player.getUniqueId())) return new Attribution(player.getUniqueId(), player.getName(), projectile.getType().name(), projectile.getUniqueId(), player.getLocation(), System.currentTimeMillis());
+        if (playerMilestones.add(key)) {
+            reportService.recordMilestone(uuid, name, key, description);
         }
-        if (damager instanceof TNTPrimed tnt && tnt.getSource() instanceof Player player && matchManager.isParticipant(player.getUniqueId())) return new Attribution(player.getUniqueId(), player.getName(), "TNT", null, tnt.getLocation(), System.currentTimeMillis());
-        return null;
-    }
-
-    private Attribution resolveBlockAttribution(MatchSession session, Block block, EntityDamageEvent.DamageCause cause, Location victimLocation) {
-        if (block != null) {
-            Attribution lava = session.lavaSources.get(BlockKey.of(block));
-            if (lava != null) return lava.withLocation(victimLocation);
-        }
-        if (cause == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION || cause == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION) return resolveExplosionAttribution(session, victimLocation);
-        return null;
-    }
-
-    private Attribution resolveExplosionAttribution(MatchSession session, Location location) {
-        long cutoff = System.currentTimeMillis() - 5000L;
-        return session.recentExplosiveHazards.stream()
-                .filter(attribution -> attribution.createdAtEpochMillis() >= cutoff)
-                .filter(attribution -> attribution.location() != null && attribution.location().getWorld() != null && location != null && location.getWorld() != null)
-                .filter(attribution -> attribution.location().getWorld().getUID().equals(location.getWorld().getUID()))
-                .filter(attribution -> attribution.location().distanceSquared(location) <= 64.0)
-                .max(java.util.Comparator.comparingLong(Attribution::createdAtEpochMillis))
-                .orElse(null);
-    }
-
-    private Attribution resolveDeathAttribution(MatchSession session, Player player) {
-        EntityDamageEvent last = player.getLastDamageCause();
-        if (last instanceof EntityDamageByEntityEvent byEntity) return resolveEntityAttribution(session, byEntity.getDamager());
-        if (last instanceof EntityDamageByBlockEvent byBlock) return resolveBlockAttribution(session, byBlock.getDamager(), byBlock.getCause(), player.getLocation());
-        if (last != null && (last.getCause() == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION || last.getCause() == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION || last.getCause() == EntityDamageEvent.DamageCause.FIRE_TICK || last.getCause() == EntityDamageEvent.DamageCause.LAVA)) {
-            Attribution recent = session.recentVictimAttribution.get(player.getUniqueId());
-            if (recent != null) return recent;
-            return resolveExplosionAttribution(session, player.getLocation());
-        }
-        return null;
-    }
-
-    private String weaponName(ItemStack item) {
-        return (item == null || item.getType().isAir()) ? "HAND" : item.getType().name();
     }
 }

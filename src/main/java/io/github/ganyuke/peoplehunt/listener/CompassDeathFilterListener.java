@@ -5,17 +5,20 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 
-public class CompassListener implements Listener {
+public class CompassDeathFilterListener implements Listener {
 
     private final CompassService compassService;
 
-    public CompassListener(CompassService compassService) {
+    public CompassDeathFilterListener(CompassService compassService) {
         this.compassService = compassService;
     }
 
+    /**
+     * Handle removal of the plugin's hunter compass on player
+     * death to avoid duplication.
+     */
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
-        // Automatically checks all dropped items and removes them if they are the plugin compass
         event.getDrops().removeIf(compassService::isPluginCompass);
     }
 }

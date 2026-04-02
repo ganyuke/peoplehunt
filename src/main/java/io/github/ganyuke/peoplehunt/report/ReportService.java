@@ -691,7 +691,7 @@ public final class ReportService {
                 points.add(point);
                 return;
             }
-            SimplePoint last = points.get(points.size() - 1);
+            SimplePoint last = points.getLast();
             if (!last.world().equals(point.world())
                     || Math.abs(last.x() - point.x()) > 0.1
                     || Math.abs(last.y() - point.y()) > 0.1

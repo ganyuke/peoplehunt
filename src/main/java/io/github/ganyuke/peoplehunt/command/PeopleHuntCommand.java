@@ -89,20 +89,20 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleStart(CommandSender sender) throws IOException {
         matchManager.startNow();
-        sender.sendMessage(Component.text("Match started.", NamedTextColor.GREEN));
+        // match manager handles the manhunt start message
         return true;
     }
 
     private boolean handleStop(CommandSender sender) throws IOException {
         matchManager.stopInconclusive();
-        sender.sendMessage(Component.text("Match stopped.", NamedTextColor.GREEN));
+        sender.sendMessage(Component.text("Manhunt force-stopped.", NamedTextColor.GREEN));
         return true;
     }
 
     private boolean handlePrime(CommandSender sender, String[] args) {
         Boolean keepFull = args.length >= 2 ? Boolean.parseBoolean(args[1]) : null;
         matchManager.prime(keepFull);
-        sender.sendMessage(Component.text("Prime enabled. Match will start when the runner moves.", NamedTextColor.GREEN));
+        sender.sendMessage(Component.text("Waiting for runner to move...", NamedTextColor.GREEN));
         return true;
     }
 
