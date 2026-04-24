@@ -12,6 +12,15 @@ compass:
     lore: []
 kit:
   apply-on-start: true
+# Inventory control: how hunters' inventories are handled on death.
+# none  — full vanilla drop (default)
+# kit   — drop everything, but the active kit is restored on respawn
+# keep  — keep full inventory across death
+inventory-control:
+  # When the runner first enters the End, the inventory control mode
+  # is replaced with this value. Set to the same value as your session
+  # default if you do not want the End to behave differently.
+  end-mode: NONE
 end-portal-respawn:
   enabled: true
   overworld-radius: 64.0
@@ -23,17 +32,19 @@ reporting:
     port: 18765
 deathstreaks:
   enabled: true
+  # How deaths are attributed to the runner for streak counting.
+  # uuid_strict    — death attribution UUID must match runner UUID (default, most reliable)
+  # message_strict — death message text must contain the runner's name
+  # either         — either condition is sufficient
+  attribution-mode: UUID_STRICT
   tiers:
+    # Tier 1: full iron kit after 3 runner-attributed deaths
     - deaths: 3
       damage-to-reset: 6.0
-      keep-inventory-mode: INHERIT
       saturation:
         food: 20
         saturation: 6.0
-      potion-effects:
-        - type: SPEED
-          duration-seconds: 30
-          amplifier: 0
+      potion-effects: []
       items:
         - material: IRON_HELMET
           amount: 1
@@ -43,27 +54,23 @@ deathstreaks:
           amount: 1
         - material: IRON_BOOTS
           amount: 1
-    - deaths: 5
+        - material: IRON_SWORD
+          amount: 1
+        - material: IRON_AXE
+          amount: 1
+        - material: IRON_PICKAXE
+          amount: 1
+    # Tier 2: stone tools only (no armor) after 6 runner-attributed deaths
+    - deaths: 6
       damage-to-reset: 8.0
-      keep-inventory-mode: ALL
       saturation:
         food: 20
-        saturation: 8.0
-      potion-effects:
-        - type: SPEED
-          duration-seconds: 45
-          amplifier: 0
-        - type: REGENERATION
-          duration-seconds: 10
-          amplifier: 0
+        saturation: 5.0
+      potion-effects: []
       items:
-        - material: IRON_HELMET
+        - material: STONE_SWORD
           amount: 1
-        - material: IRON_CHESTPLATE
+        - material: STONE_AXE
           amount: 1
-        - material: IRON_LEGGINGS
-          amount: 1
-        - material: IRON_BOOTS
-          amount: 1
-        - material: SHIELD
+        - material: STONE_PICKAXE
           amount: 1

@@ -95,18 +95,34 @@ public final class MatchManager {
         return Collections.unmodifiableSet(stateData.explicitHunters);
     }
 
-    public KeepInventoryMode keepInventoryMode() {
-        return stateData.keepInventoryMode;
+    public KeepInventoryMode inventoryControlMode() {
+        return stateData.inventoryControlMode;
     }
 
-    public void setKeepInventoryMode(KeepInventoryMode mode) {
-        KeepInventoryMode resolved = mode == null ? KeepInventoryMode.NONE : mode;
-        stateData.keepInventoryMode = resolved;
+    public void setInventoryControlMode(KeepInventoryMode mode) {
+        KeepInventoryMode resolved = (mode == null || mode == KeepInventoryMode.INHERIT)
+                ? KeepInventoryMode.NONE : mode;
+        stateData.inventoryControlMode = resolved;
         if (activeSession != null) {
             activeSession.keepInventoryMode = resolved;
             reportService.updateSessionSettings(resolved, activeSession.activeKitId);
         }
         persistQuietly();
+    }
+
+    /**
+     * Switches the active session's effective inventory control mode to the
+     * configured end-dimension override. Called once when the runner first
+     * enters the End. No-op if the session has already been switched or if
+     * there is no active session.
+     */
+    public void activateEndInventoryControl(KeepInventoryMode endMode) {
+        if (activeSession == null || activeSession.endInventoryControlActivated) return;
+        activeSession.endInventoryControlActivated = true;
+        activeSession.keepInventoryMode = endMode;
+        reportService.updateSessionSettings(endMode, activeSession.activeKitId);
+        broadcast(Text.mm("<yellow>Runner has entered the End. Inventory control switched to <white>"
+                + endMode.name() + "</white>.</yellow>"));
     }
 
     public String activeKitId() {
@@ -238,7 +254,7 @@ public final class MatchManager {
         }
 
         UUID reportId = reportService.startSession(
-                runner.getUniqueId(), runner.getName(), stateData.keepInventoryMode,
+                runner.getUniqueId(), runner.getName(), stateData.inventoryControlMode,
                 stateData.activeKitId, config.reportStorageFormat(), participants
         );
 
@@ -249,7 +265,7 @@ public final class MatchManager {
                 hunterIds,
                 spectatorIds,
                 stateData.activeKitId,
-                stateData.keepInventoryMode
+                stateData.inventoryControlMode
         );
         activeSession.nextElapsedAnnouncementMinutes = Math.max(1, config.elapsedAnnouncementMinutes());
         activeSession.currentRunnerLocation = runner.getLocation().clone();
@@ -501,7 +517,7 @@ public final class MatchManager {
     }
 
     private String buildActiveStatusMessage() {
-        return messageBlock("PEOPLEHUNT STATUS", List.of(
+        List<String> lines = new ArrayList<>(List.of(
                 statusLine("State", "<green><b>ACTIVE</b></green>"),
                 statusLine("Runner", white(nameOf(stateData.runnerUuid))),
                 statusLine("Hunters", white(namesOf(activeSession.hunterIds))),
@@ -510,9 +526,12 @@ public final class MatchManager {
                 statusLine("Elapsed", white(Text.formatDurationMillis(
                         System.currentTimeMillis() - activeSession.startedAtEpochMillis
                 ))),
-                statusLine("Keep inventory", white(String.valueOf(activeSession.keepInventoryMode))),
-                statusLine("Kit", white(displayKit(activeSession.activeKitId)))
+                statusLine("Inventory control", white(String.valueOf(activeSession.keepInventoryMode)))
         ));
+        if (activeSession.keepInventoryMode == KeepInventoryMode.KIT) {
+            lines.add(statusLine("Kit", white(displayKit(activeSession.activeKitId))));
+        }
+        return messageBlock("PEOPLEHUNT STATUS", lines);
     }
 
     private String buildPrimedStatusMessage() {
@@ -526,7 +545,7 @@ public final class MatchManager {
     }
 
     private String buildIdleStatusMessage() {
-        return messageBlock("PEOPLEHUNT STATUS", List.of(
+        List<String> lines = new ArrayList<>(List.of(
                 statusLine("State", "<gray><b>IDLE</b></gray>"),
                 statusLine("Pending runner", white(nameOf(stateData.runnerUuid))),
                 statusLine(
@@ -535,9 +554,12 @@ public final class MatchManager {
                                 ? "all online except runner"
                                 : namesOf(stateData.explicitHunters))
                 ),
-                statusLine("Keep inventory", white(String.valueOf(stateData.keepInventoryMode))),
-                statusLine("Kit", white(displayKit(stateData.activeKitId)))
+                statusLine("Inventory control", white(String.valueOf(stateData.inventoryControlMode)))
         ));
+        if (stateData.inventoryControlMode == KeepInventoryMode.KIT) {
+            lines.add(statusLine("Kit", white(displayKit(stateData.activeKitId))));
+        }
+        return messageBlock("PEOPLEHUNT STATUS", lines);
     }
 
     private String buildFinishedStatsMessage(ReportModels.ViewerSnapshot snapshot) {

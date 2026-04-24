@@ -54,18 +54,18 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 return true;
             }
             return switch (subcommand) {
-                case "start"                      -> handleStart(sender);
-                case "stop"                       -> handleStop(sender);
-                case "prime"                      -> handlePrime(sender, args);
-                case "prepare"                    -> handlePrepare(sender);
-                case "runner"                     -> handleRunner(sender, args);
-                case "hunter"                     -> handleHunter(sender, args);
-                case "status"                     -> handleStatus(sender);
-                case "surround"                   -> handleSurround(sender, args);
-                case "compass"                    -> handleCompass(sender, args);
-                case "kit"                        -> handleKit(sender, args);
-                case "keepinventory", "keepinv"   -> handleKeepInventory(sender, args);
-                case "aar"                        -> handleAar(sender, args);
+                case "start"                               -> handleStart(sender);
+                case "stop"                                -> handleStop(sender);
+                case "prime"                               -> handlePrime(sender, args);
+                case "prepare"                             -> handlePrepare(sender);
+                case "runner"                              -> handleRunner(sender, args);
+                case "hunter"                              -> handleHunter(sender, args);
+                case "status"                              -> handleStatus(sender);
+                case "surround"                            -> handleSurround(sender, args);
+                case "compass"                             -> handleCompass(sender, args);
+                case "kit"                                 -> handleKit(sender, args);
+                case "inventorycontrol", "ic"              -> handleInventoryControl(sender, args);
+                case "aar"                                 -> handleAar(sender, args);
                 default -> {
                     sender.sendMessage(Component.text("Unknown subcommand.", NamedTextColor.RED));
                     yield true;
@@ -193,23 +193,51 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleKit(CommandSender sender, String[] args) throws IOException {
-        if (args.length < 3) {
-            sender.sendMessage(Component.text("Usage: /peoplehunt kit <set|delete> <identifier>", NamedTextColor.RED));
+        if (args.length < 2) {
+            sender.sendMessage(Component.text(
+                    "Usage: /peoplehunt kit <save|select|clear|delete> [identifier]",
+                    NamedTextColor.RED));
             return true;
         }
         String action = args[1].toLowerCase();
-        String identifier = args[2];
         switch (action) {
-            case "set" -> {
+            case "save" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(Component.text("Usage: /peoplehunt kit save <identifier>", NamedTextColor.RED));
+                    return true;
+                }
                 if (!(sender instanceof Player player)) {
                     sender.sendMessage(Component.text("Only a player can save a kit from inventory.", NamedTextColor.RED));
                     return true;
                 }
+                String identifier = args[2];
                 kitService.saveKit(identifier, player);
                 matchManager.setActiveKitId(identifier);
                 sender.sendMessage(Component.text("Saved and selected kit '" + identifier + "'.", NamedTextColor.GREEN));
             }
+            case "select" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(Component.text("Usage: /peoplehunt kit select <identifier>", NamedTextColor.RED));
+                    return true;
+                }
+                String identifier = args[2];
+                if (kitService.get(identifier).isEmpty()) {
+                    sender.sendMessage(Component.text("Kit '" + identifier + "' not found.", NamedTextColor.RED));
+                    return true;
+                }
+                matchManager.setActiveKitId(identifier);
+                sender.sendMessage(Component.text("Selected kit '" + identifier + "'.", NamedTextColor.GREEN));
+            }
+            case "clear" -> {
+                matchManager.setActiveKitId(null);
+                sender.sendMessage(Component.text("Active kit cleared.", NamedTextColor.GREEN));
+            }
             case "delete" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(Component.text("Usage: /peoplehunt kit delete <identifier>", NamedTextColor.RED));
+                    return true;
+                }
+                String identifier = args[2];
                 boolean removed = kitService.deleteKit(identifier);
                 if (removed && identifier.equals(matchManager.activeKitId())) {
                     matchManager.setActiveKitId(null);
@@ -218,29 +246,37 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                         removed ? "Deleted kit '" + identifier + "'." : "Kit not found.",
                         removed ? NamedTextColor.GREEN : NamedTextColor.RED));
             }
-            default -> sender.sendMessage(Component.text("Unknown kit action.", NamedTextColor.RED));
+            default -> sender.sendMessage(Component.text(
+                    "Unknown kit action. Valid: save, select, clear, delete.", NamedTextColor.RED));
         }
         return true;
     }
 
-    private boolean handleKeepInventory(CommandSender sender, String[] args) {
+    private boolean handleInventoryControl(CommandSender sender, String[] args) {
+        // /peoplehunt ic <none|kit|keep>
+        // /peoplehunt ic end <none|kit|keep>   — NOT supported mid-match, only in config
         if (args.length < 2) {
-            sender.sendMessage(Component.text("Usage: /peoplehunt keepinventory <none|kit|all>", NamedTextColor.RED));
+            sender.sendMessage(Component.text(
+                    "Usage: /peoplehunt inventorycontrol <none|kit|keep>",
+                    NamedTextColor.RED));
             return true;
         }
+        String raw = args[1].toUpperCase(java.util.Locale.ROOT);
         KeepInventoryMode mode;
         try {
-            mode = KeepInventoryMode.valueOf(args[1].toUpperCase(java.util.Locale.ROOT));
+            mode = KeepInventoryMode.valueOf(raw);
         } catch (IllegalArgumentException e) {
-            sender.sendMessage(Component.text("Unknown mode '" + args[1] + "'. Valid: none, kit, all.", NamedTextColor.RED));
+            sender.sendMessage(Component.text(
+                    "Unknown mode '" + args[1] + "'. Valid: none, kit, keep.", NamedTextColor.RED));
             return true;
         }
         if (mode == KeepInventoryMode.INHERIT) {
-            sender.sendMessage(Component.text("INHERIT is only valid inside deathstreak config tiers.", NamedTextColor.RED));
+            sender.sendMessage(Component.text(
+                    "INHERIT is not a valid inventory control mode.", NamedTextColor.RED));
             return true;
         }
-        matchManager.setKeepInventoryMode(mode);
-        sender.sendMessage(Component.text("Keep inventory mode set to " + mode + '.', NamedTextColor.GREEN));
+        matchManager.setInventoryControlMode(mode);
+        sender.sendMessage(Component.text("Inventory control set to " + mode + '.', NamedTextColor.GREEN));
         return true;
     }
 
@@ -323,27 +359,31 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             return filter(List.of(
                     "start", "stop", "prime", "prepare",
                     "runner", "hunter", "status", "surround",
-                    "compass", "kit", "keepinventory", "keepinv",
+                    "compass", "kit", "inventorycontrol", "ic",
                     "aar", "portal"), partial);
         }
 
         if (args.length == 2) {
             List<String> opts = switch (args[0].toLowerCase()) {
-                case "prime"                    -> List.of("true", "false");
+                case "prime"                         -> List.of("true", "false");
                 case "runner", "hunter",
-                     "compass"                  -> playerSuggestions(sender);
-                case "kit"                      -> List.of("set", "delete");
-                case "keepinventory", "keepinv" -> List.of("none", "kit", "all");
-                case "aar"                      -> List.of("list", "export");
-                default                         -> List.of();
+                     "compass"                       -> playerSuggestions(sender);
+                case "kit"                           -> List.of("save", "select", "clear", "delete");
+                case "inventorycontrol", "ic"        -> List.of("none", "kit", "keep");
+                case "aar"                           -> List.of("list", "export");
+                default                              -> List.of();
             };
             return filter(opts, partial);
         }
 
         if (args.length == 3) {
-            // kit delete <identifier>
-            if (args[0].equalsIgnoreCase("kit") && args[1].equalsIgnoreCase("delete")) {
-                return filter(new ArrayList<>(kitService.identifiers()), partial);
+            // kit save/select/delete <identifier>
+            if (args[0].equalsIgnoreCase("kit")) {
+                return switch (args[1].toLowerCase()) {
+                    case "select", "delete" -> filter(new ArrayList<>(kitService.identifiers()), partial);
+                    case "save"             -> List.of("<identifier>");
+                    default                 -> List.of();
+                };
             }
             // aar export <uuid>
             if (args[0].equalsIgnoreCase("aar") && args[1].equalsIgnoreCase("export")) {

@@ -5,6 +5,7 @@ import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakTier;
 import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
 import io.github.ganyuke.peoplehunt.game.KitService;
+import io.github.ganyuke.peoplehunt.game.match.AttributionManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession;
 import io.github.ganyuke.peoplehunt.game.Role;
@@ -19,6 +20,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -40,14 +42,16 @@ public class MatchLifecycleListener implements Listener {
     private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
     private final MatchManager matchManager;
+    private final AttributionManager attributionManager;
     private final KitService kitService;
     private final CompassService compassService;
     private final ReportService reportService;
 
-    public MatchLifecycleListener(JavaPlugin plugin, PeopleHuntConfig config, MatchManager matchManager, KitService kitService, CompassService compassService, ReportService reportService) {
+    public MatchLifecycleListener(JavaPlugin plugin, PeopleHuntConfig config, MatchManager matchManager, AttributionManager attributionManager, KitService kitService, CompassService compassService, ReportService reportService) {
         this.plugin = plugin;
         this.config = config;
         this.matchManager = matchManager;
+        this.attributionManager = attributionManager;
         this.kitService = kitService;
         this.compassService = compassService;
         this.reportService = reportService;
@@ -91,12 +95,19 @@ public class MatchLifecycleListener implements Listener {
             Role role = matchManager.roleOf(player.getUniqueId());
             if (role == Role.HUNTER) {
                 player.setGameMode(GameMode.SURVIVAL);
+
+                // Restore kit items preserved on death (KIT mode)
                 List<ItemStack> restore = session.pendingRespawnRestore.remove(player.getUniqueId());
                 if (restore != null) {
                     for (ItemStack item : restore) ItemUtil.giveOrDrop(player, item);
                 }
-                if (session.activeKitId != null) kitService.applyMissingKit(player, session.activeKitId);
-                applyDeathstreakRewards(session, player);
+
+                // Apply session kit in KIT mode
+                if (session.keepInventoryMode == KeepInventoryMode.KIT && session.activeKitId != null) {
+                    kitService.applyMissingKit(player, session.activeKitId);
+                }
+
+                applyDeathstreakKit(session, player);
                 compassService.giveCompass(List.of(player));
                 maybeOfferEndPortalTeleport(session, player);
             } else if (role == Role.RUNNER) {
@@ -112,18 +123,28 @@ public class MatchLifecycleListener implements Listener {
         MatchSession session = matchManager.getSession();
         if (session == null) return;
         Player player = event.getPlayer();
-        if (matchManager.roleOf(player.getUniqueId()) == Role.HUNTER) {
-            KeepInventoryMode mode = effectiveKeepInventoryMode(session, player.getUniqueId());
-            if (mode == KeepInventoryMode.ALL) {
+        if (matchManager.roleOf(player.getUniqueId()) != Role.HUNTER) return;
+
+        switch (session.keepInventoryMode) {
+            case KEEP -> {
                 event.setKeepInventory(true);
                 event.getDrops().clear();
                 event.setKeepLevel(true);
                 event.setDroppedExp(0);
-            } else if (mode == KeepInventoryMode.KIT && session.activeKitId != null) {
-                List<ItemStack> preserved = ItemUtil.removeUpToMatches(event.getDrops(), kitService.templateItems(session.activeKitId));
-                if (!preserved.isEmpty()) {
-                    session.pendingRespawnRestore.computeIfAbsent(player.getUniqueId(), ignored -> new ArrayList<>()).addAll(ItemUtil.cloneAll(preserved));
+            }
+            case KIT -> {
+                if (session.activeKitId != null) {
+                    List<ItemStack> preserved = ItemUtil.removeUpToMatches(
+                            event.getDrops(), kitService.templateItems(session.activeKitId));
+                    if (!preserved.isEmpty()) {
+                        session.pendingRespawnRestore
+                                .computeIfAbsent(player.getUniqueId(), ignored -> new ArrayList<>())
+                                .addAll(ItemUtil.cloneAll(preserved));
+                    }
                 }
+            }
+            case NONE, INHERIT -> {
+                // full vanilla drop — nothing to do
             }
         }
     }
@@ -148,10 +169,36 @@ public class MatchLifecycleListener implements Listener {
             }
         } else if (role == Role.HUNTER) {
             session.lifeIndex.compute(player.getUniqueId(), (ignored, current) -> (current == null ? 1 : current) + 1);
-            MatchSession.DeathstreakState state = session.deathstreaks.computeIfAbsent(player.getUniqueId(), ignored -> new MatchSession.DeathstreakState());
-            state.streakDeaths++;
+            MatchSession.DeathstreakState state = session.deathstreaks
+                    .computeIfAbsent(player.getUniqueId(), ignored -> new MatchSession.DeathstreakState());
+
+            if (isRunnerAttributedDeath(session, player, event)) {
+                state.streakDeaths++;
+            }
             state.damageThisLife = 0.0;
         }
+    }
+
+    /**
+     * Returns true if this hunter death should be counted toward the deathstreak,
+     * according to the configured attribution mode.
+     */
+    private boolean isRunnerAttributedDeath(MatchSession session, Player hunter, PlayerDeathEvent event) {
+        MatchSession.Attribution attribution = attributionManager.resolveDeathAttribution(hunter);
+        boolean byUuid = attribution != null && session.runnerUuid.equals(attribution.playerUuid());
+
+        return switch (config.deathstreakAttributionMode()) {
+            case UUID_STRICT    -> byUuid;
+            case MESSAGE_STRICT -> deathMessageContainsRunner(session, event);
+            case EITHER         -> byUuid || deathMessageContainsRunner(session, event);
+        };
+    }
+
+    private boolean deathMessageContainsRunner(MatchSession session, PlayerDeathEvent event) {
+        if (event.deathMessage() == null) return false;
+        String plain = PlainTextComponentSerializer.plainText().serialize(event.deathMessage());
+        String runnerName = matchManager.nameOf(session.runnerUuid);
+        return plain.contains(runnerName);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -179,19 +226,86 @@ public class MatchLifecycleListener implements Listener {
         player.sendMessage(prompt);
     }
 
-    private void applyDeathstreakRewards(MatchSession session, Player player) {
+    /**
+     * Applies the active deathstreak tier's item grants to the hunter on respawn.
+     * Saturation and potion effects are applied unconditionally when a tier is active.
+     * Item grants are applied slot-aware:
+     * <ul>
+     *   <li>Armor materials go to the correct armor slot if that slot is empty.</li>
+     *   <li>All other items fill the first available storage slot or are dropped.</li>
+     *   <li>If the inventory control mode is KEEP the hunter already has items, so we
+     *       only fill in missing pieces. For NONE/KIT the hunter has an empty inventory
+     *       so every grant is given outright.</li>
+     * </ul>
+     */
+    private void applyDeathstreakKit(MatchSession session, Player player) {
         if (!config.deathstreaksEnabled()) return;
         DeathstreakTier tier = activeDeathstreakTier(session, player.getUniqueId());
         if (tier == null) return;
 
         player.setFoodLevel(Math.max(player.getFoodLevel(), tier.saturationBoost().foodLevel()));
         player.setSaturation(Math.max(player.getSaturation(), tier.saturationBoost().saturation()));
-        for (var potion : tier.potionGrants()) player.addPotionEffect(new PotionEffect(potion.type(), potion.durationSeconds() * 20, potion.amplifier(), true, true, true));
-        for (var item : tier.itemGrants()) {
-            int existing = ItemUtil.countSimilar(player.getInventory(), new ItemStack(item.material(), item.amount()));
-            if (existing >= item.amount()) continue;
-            ItemUtil.giveOrDrop(player, new ItemStack(item.material(), item.amount() - existing));
+        for (var potion : tier.potionGrants()) {
+            player.addPotionEffect(new PotionEffect(potion.type(), potion.durationSeconds() * 20,
+                    potion.amplifier(), true, true, true));
         }
+
+        org.bukkit.inventory.PlayerInventory inv = player.getInventory();
+        for (var grant : tier.itemGrants()) {
+            ItemStack stack = new ItemStack(grant.material(), grant.amount());
+
+            // Attempt to place armor into the correct slot first
+            if (tryPlaceArmor(inv, stack)) continue;
+
+            // For non-armor (tools, etc.) only give if none already present
+            int existing = ItemUtil.countSimilar(inv, stack);
+            if (existing >= grant.amount()) continue;
+
+            int needed = grant.amount() - existing;
+            ItemStack give = new ItemStack(grant.material(), needed);
+            ItemUtil.giveOrDrop(player, give);
+        }
+        player.updateInventory();
+    }
+
+    /**
+     * If the given item is an armor piece and its corresponding armor slot is empty,
+     * places it there and returns {@code true}. Returns {@code false} for non-armor
+     * items or when the slot is already occupied.
+     */
+    private boolean tryPlaceArmor(org.bukkit.inventory.PlayerInventory inv, ItemStack stack) {
+        org.bukkit.Material mat = stack.getType();
+        String name = mat.name();
+
+        if (name.endsWith("_HELMET") || name.equals("TURTLE_HELMET")) {
+            if (inv.getHelmet() == null || inv.getHelmet().getType().isAir()) {
+                inv.setHelmet(stack);
+                return true;
+            }
+            return true; // slot occupied — still consumed (don't double-give)
+        }
+        if (name.endsWith("_CHESTPLATE") || mat == org.bukkit.Material.ELYTRA) {
+            if (inv.getChestplate() == null || inv.getChestplate().getType().isAir()) {
+                inv.setChestplate(stack);
+                return true;
+            }
+            return true;
+        }
+        if (name.endsWith("_LEGGINGS")) {
+            if (inv.getLeggings() == null || inv.getLeggings().getType().isAir()) {
+                inv.setLeggings(stack);
+                return true;
+            }
+            return true;
+        }
+        if (name.endsWith("_BOOTS")) {
+            if (inv.getBoots() == null || inv.getBoots().getType().isAir()) {
+                inv.setBoots(stack);
+                return true;
+            }
+            return true;
+        }
+        return false; // not an armor piece
     }
 
     private DeathstreakTier activeDeathstreakTier(MatchSession session, UUID hunterUuid) {
@@ -201,10 +315,5 @@ public class MatchLifecycleListener implements Listener {
                 .filter(tier -> state.streakDeaths >= tier.deaths())
                 .max(Comparator.comparingInt(DeathstreakTier::deaths))
                 .orElse(null);
-    }
-
-    public KeepInventoryMode effectiveKeepInventoryMode(MatchSession session, UUID hunterUuid) {
-        DeathstreakTier tier = activeDeathstreakTier(session, hunterUuid);
-        return tier != null ? tier.keepInventoryMode().resolve(session.keepInventoryMode) : session.keepInventoryMode;
     }
 }

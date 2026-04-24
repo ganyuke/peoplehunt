@@ -123,6 +123,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                         this,
                         peopleHuntConfig,
                         services.matchManager,
+                        services.attributionManager,
                         services.kitService,
                         services.compassService,
                         services.reportService

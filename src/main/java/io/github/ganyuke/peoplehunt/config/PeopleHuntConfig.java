@@ -28,7 +28,9 @@ public final class PeopleHuntConfig {
     private final boolean webEnabled;
     private final int webPort;
     private final boolean deathstreaksEnabled;
+    private final DeathstreakAttributionMode deathstreakAttributionMode;
     private final List<DeathstreakTier> deathstreakTiers;
+    private final KeepInventoryMode endInventoryControlMode;
 
     private PeopleHuntConfig(
             int elapsedAnnouncementMinutes,
@@ -47,7 +49,9 @@ public final class PeopleHuntConfig {
             boolean webEnabled,
             int webPort,
             boolean deathstreaksEnabled,
-            List<DeathstreakTier> deathstreakTiers
+            DeathstreakAttributionMode deathstreakAttributionMode,
+            List<DeathstreakTier> deathstreakTiers,
+            KeepInventoryMode endInventoryControlMode
     ) {
         this.elapsedAnnouncementMinutes = elapsedAnnouncementMinutes;
         this.primeKeepPlayersFull = primeKeepPlayersFull;
@@ -65,7 +69,9 @@ public final class PeopleHuntConfig {
         this.webEnabled = webEnabled;
         this.webPort = webPort;
         this.deathstreaksEnabled = deathstreaksEnabled;
+        this.deathstreakAttributionMode = deathstreakAttributionMode;
         this.deathstreakTiers = List.copyOf(deathstreakTiers);
+        this.endInventoryControlMode = endInventoryControlMode;
     }
 
     public static PeopleHuntConfig from(FileConfiguration config) {
@@ -105,8 +111,27 @@ public final class PeopleHuntConfig {
                 config.getBoolean("reporting.web.enabled", true),
                 config.getInt("reporting.web.port", 18765),
                 config.getBoolean("deathstreaks.enabled", true),
-                tiers
+                parseAttributionMode(config.getString("deathstreaks.attribution-mode", "UUID_STRICT")),
+                tiers,
+                parseInventoryControlMode(config.getString("inventory-control.end-mode", "NONE"))
         );
+    }
+
+    private static DeathstreakAttributionMode parseAttributionMode(String raw) {
+        try {
+            return DeathstreakAttributionMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return DeathstreakAttributionMode.UUID_STRICT;
+        }
+    }
+
+    private static KeepInventoryMode parseInventoryControlMode(String raw) {
+        try {
+            KeepInventoryMode mode = KeepInventoryMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
+            return mode == KeepInventoryMode.INHERIT ? KeepInventoryMode.NONE : mode;
+        } catch (IllegalArgumentException e) {
+            return KeepInventoryMode.NONE;
+        }
     }
 
     public int elapsedAnnouncementMinutes() {
@@ -173,14 +198,39 @@ public final class PeopleHuntConfig {
         return deathstreaksEnabled;
     }
 
+    public DeathstreakAttributionMode deathstreakAttributionMode() {
+        return deathstreakAttributionMode;
+    }
+
     public List<DeathstreakTier> deathstreakTiers() {
         return deathstreakTiers;
+    }
+
+    public KeepInventoryMode endInventoryControlMode() {
+        return endInventoryControlMode;
+    }
+
+    /**
+     * Controls which deaths are counted toward a hunter's deathstreak.
+     *
+     * <ul>
+     *   <li>{@link #UUID_STRICT}    – only deaths where the resolved attribution UUID matches
+     *                                  the runner's UUID. Most reliable; default.</li>
+     *   <li>{@link #MESSAGE_STRICT} – only deaths where the death message text contains the
+     *                                  runner's name. Catches edge cases not covered by UUID
+     *                                  attribution but can false-positive on name substrings.</li>
+     *   <li>{@link #EITHER}         – increment if either condition is met.</li>
+     * </ul>
+     */
+    public enum DeathstreakAttributionMode {
+        UUID_STRICT,
+        MESSAGE_STRICT,
+        EITHER
     }
 
     public record DeathstreakTier(
             int deaths,
             double damageToReset,
-            KeepInventoryMode keepInventoryMode,
             SaturationBoost saturationBoost,
             List<PotionGrant> potionGrants,
             List<ItemGrant> itemGrants
@@ -202,7 +252,6 @@ public final class PeopleHuntConfig {
             return new DeathstreakTier(
                     section.getInt("deaths", 0),
                     section.getDouble("damage-to-reset", 0.0),
-                    KeepInventoryMode.valueOf(section.getString("keep-inventory-mode", "INHERIT").toUpperCase()),
                     new SaturationBoost(
                             saturation == null ? 20 : saturation.getInt("food", 20),
                             saturation == null ? 5.0f : (float) saturation.getDouble("saturation", 5.0)
@@ -235,7 +284,6 @@ public final class PeopleHuntConfig {
             return new DeathstreakTier(
                     intValue(map, "deaths", 0),
                     doubleValue(map, "damage-to-reset", 0.0),
-                    KeepInventoryMode.valueOf(stringValue(map, "keep-inventory-mode", "INHERIT").toUpperCase()),
                     new SaturationBoost(
                             intValue(saturation, "food", 20),
                             (float) doubleValue(saturation, "saturation", 5.0)
@@ -251,6 +299,7 @@ public final class PeopleHuntConfig {
     public record PotionGrant(PotionEffectType type, int durationSeconds, int amplifier) {
         public static PotionGrant fromMap(java.util.Map<?, ?> map) {
             String key = stringValue(map, "type", "SPEED");
+            // TODO: replace getByName() with post-1.20.3 non-deprecated technique
             PotionEffectType effectType = PotionEffectType.getByName(key.toUpperCase());
             if (effectType == null) {
                 effectType = PotionEffectType.SPEED;

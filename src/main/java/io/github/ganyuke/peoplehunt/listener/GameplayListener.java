@@ -8,6 +8,8 @@ import io.github.ganyuke.peoplehunt.game.match.MatchSession;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession.Attribution;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.papermc.paper.event.player.AsyncChatEvent;
+
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -100,10 +102,8 @@ public final class GameplayListener implements Listener {
     /**
      * Only player victims matter here because the listener is producing player-centric match
      * reports, and attribution is resolved first so downstream reporting uses one consistent source.
-     *
      * Deathstreak progress is updated on damage rather than on kill because the reset rule is
      * based on total damage dealt during a life, not just whether a kill happened.
-     *
      * First-hit and first-blood are recorded here because direct combat damage is the earliest
      * reliable point where those combat milestones become true.
      */
@@ -115,11 +115,7 @@ public final class GameplayListener implements Listener {
         Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution == null) return;
 
-        reportService.recordDamage(
-                attribution.playerUuid(), attribution.playerName(), victim.getUniqueId(), victim.getName(),
-                event.getCause().name(), event.getFinalDamage(), attribution.weapon(), attribution.projectileUuid(),
-                attribution.location(), victim.getLocation()
-        );
+        recordAttributedDamage(attribution, victim, event.getCause().name(), event.getFinalDamage());
 
         if (matchManager.isHunter(attribution.playerUuid())) {
             MatchSession.DeathstreakState state = session.deathstreaks.get(attribution.playerUuid());
@@ -127,18 +123,14 @@ public final class GameplayListener implements Listener {
                 state.damageThisLife += event.getFinalDamage();
                 DeathstreakTier activeTier = config.deathstreakTiers().stream()
                         .filter(t -> state.streakDeaths >= t.deaths())
-                        .max(java.util.Comparator.comparingInt(DeathstreakTier::deaths))
+                        .max(Comparator.comparingInt(DeathstreakTier::deaths))
                         .orElse(null);
 
                 if (activeTier != null && state.damageThisLife >= activeTier.damageToReset()) {
                     state.streakDeaths = 0;
                     state.damageThisLife = 0.0;
-                    reportService.recordTimeline(
-                            attribution.playerUuid(),
-                            attribution.playerName(),
-                            "deathstreak",
-                            "deathstreak reset by dealing enough damage"
-                    );
+                    reportService.recordTimeline(attribution.playerUuid(), attribution.playerName(),
+                            "deathstreak", "deathstreak reset by dealing enough damage");
                 }
             }
         }
@@ -163,17 +155,16 @@ public final class GameplayListener implements Listener {
         Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution == null) return;
 
+        recordAttributedDamage(attribution, victim, event.getCause().name(), event.getFinalDamage());
+    }
+
+    private void recordAttributedDamage(Attribution attribution, Player victim, String cause, double finalDamage) {
         reportService.recordDamage(
-                attribution.playerUuid(),
-                attribution.playerName(),
-                victim.getUniqueId(),
-                victim.getName(),
-                event.getCause().name(),
-                event.getFinalDamage(),
-                attribution.weapon(),
-                attribution.projectileUuid(),
-                attribution.location(),
-                victim.getLocation()
+                attribution.playerUuid(), attribution.playerName(),
+                victim.getUniqueId(), victim.getName(),
+                cause, finalDamage,
+                attribution.weapon(), attribution.projectileUuid(),
+                attribution.location(), victim.getLocation()
         );
     }
 
@@ -207,7 +198,6 @@ public final class GameplayListener implements Listener {
     /**
      * Death first consumes any recent attribution because the most recent confirmed attacker is
      * usually more reliable than reconstructing causality after the fact from the last damage event alone.
-     *
      * The fallback resolver still exists because some deaths are delayed or indirect and may not have
      * a directly consumed attribution entry by the time the death event fires.
      */
@@ -252,6 +242,10 @@ public final class GameplayListener implements Listener {
                 return;
             case THE_END:
                 recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_end", "Entered the End");
+                // If the runner just entered the End, activate the end inventory-control override.
+                if (session.runnerUuid.equals(event.getPlayer().getUniqueId())) {
+                    matchManager.activateEndInventoryControl(config.endInventoryControlMode());
+                }
         }
     }
 

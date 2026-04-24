@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -18,7 +19,6 @@ import org.bukkit.inventory.ItemStack;
 
 /**
  * Owns all match attribution state and logic.
- *
  * This class is responsible for:
  * - tracking projectiles and their shooters
  * - tracking lava and explosive hazards
@@ -72,9 +72,10 @@ public final class AttributionManager {
         MatchSession session = matchManager.getSession();
         if (session == null || !matchManager.isParticipant(shooter.getUniqueId())) return;
 
-        String weapon = shooter.getInventory().getItemInMainHand() == null
+        ItemStack mainHand = shooter.getInventory().getItemInMainHand();
+        String weapon = mainHand.getType() == Material.AIR
                 ? projectile.getType().name()
-                : shooter.getInventory().getItemInMainHand().getType().name();
+                : mainHand.getType().name();
 
         session.trackedProjectiles.put(
                 projectile.getUniqueId(),

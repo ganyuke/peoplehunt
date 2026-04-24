@@ -24,6 +24,7 @@ public class MatchSession {
     public final Set<UUID> spectatorIds;
     public String activeKitId;
     public KeepInventoryMode keepInventoryMode;
+    public boolean endInventoryControlActivated = false;
     public long nextElapsedAnnouncementMinutes = 1L;
 
     // --- Player State ---

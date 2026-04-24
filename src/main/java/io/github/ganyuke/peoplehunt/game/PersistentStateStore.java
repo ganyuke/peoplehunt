@@ -42,7 +42,7 @@ public final class PersistentStateStore {
         public UUID runnerUuid;
         public Set<UUID> explicitHunters = new LinkedHashSet<>();
         public String activeKitId;
-        public KeepInventoryMode keepInventoryMode = KeepInventoryMode.NONE;
+        public KeepInventoryMode inventoryControlMode = KeepInventoryMode.NONE;
         public long selectionGeneration = 0L;
         public LastStatusSnapshot lastStatusSnapshot;
 
@@ -50,8 +50,8 @@ public final class PersistentStateStore {
             if (explicitHunters == null) {
                 explicitHunters = new LinkedHashSet<>();
             }
-            if (keepInventoryMode == null) {
-                keepInventoryMode = KeepInventoryMode.NONE;
+            if (inventoryControlMode == null || inventoryControlMode == KeepInventoryMode.INHERIT) {
+                inventoryControlMode = KeepInventoryMode.NONE;
             }
             return this;
         }
