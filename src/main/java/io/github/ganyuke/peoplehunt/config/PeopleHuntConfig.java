@@ -230,6 +230,7 @@ public final class PeopleHuntConfig {
 
     public record DeathstreakTier(
             int deaths,
+            // Deprecated config compatibility: damage no longer resets hunter deathstreaks.
             double damageToReset,
             SaturationBoost saturationBoost,
             List<PotionGrant> potionGrants,

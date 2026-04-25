@@ -14,8 +14,8 @@ public class CompassDeathFilterListener implements Listener {
     }
 
     /**
-     * Handle removal of the plugin's hunter compass on player
-     * death to avoid duplication.
+     * Plugin compasses should never be dropped on death. Respawn/rejoin code may call
+     * CompassService#giveCompass again, but that method is duplicate-safe.
      */
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {

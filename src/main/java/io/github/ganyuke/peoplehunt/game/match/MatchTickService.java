@@ -10,6 +10,12 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+/**
+ * Owns scheduled runtime tasks for active or primed matches.
+ *
+ * <p>These tasks are kept outside {@link MatchManager} so state transitions stay readable while the
+ * scheduler-specific bookkeeping remains isolated in one place.
+ */
 public class MatchTickService {
     private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
@@ -32,6 +38,8 @@ public class MatchTickService {
 
     public void startRuntimeTasks() {
         stopRuntimeTasks();
+        // Path sampling is decoupled from movement events so reports still receive consistent points
+        // during stationary periods and across all participants.
         pathTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this::recordPathSample, config.playerPathSampleIntervalTicks(), config.playerPathSampleIntervalTicks());
         elapsedTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
             MatchSession session = matchManager.getSession();
@@ -56,6 +64,8 @@ public class MatchTickService {
         primeTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
             PrimeContext ctx = matchManager.getPrimeContext();
             if (ctx == null || !ctx.keepPlayersFull()) return;
+            // Prime mode can optionally act like a warmup by continuously topping up health/food
+            // until the runner actually starts moving.
             for (UUID uuid : ctx.participantIds()) {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null) {
@@ -75,6 +85,8 @@ public class MatchTickService {
     private void recordPathSample() {
         MatchSession session = matchManager.getSession();
         if (session == null) return;
+        // Paths are sampled for every active participant, including spectators, so the report can
+        // reconstruct role changes and movement context over time.
         for (Map.Entry<UUID, Role> entry : session.roles.entrySet()) {
             Player player = Bukkit.getPlayer(entry.getKey());
             if (player != null) {

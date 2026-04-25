@@ -16,6 +16,13 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
+/**
+ * Creates, identifies, distributes, and periodically retargets the plugin's custom hunter compass.
+ *
+ * <p>The service does not decide <em>where</em> a compass should point; it delegates that to a
+ * {@link CompassTargetProvider}. This keeps compass item management separate from movement/match
+ * rules.
+ */
 public final class CompassService {
     private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
@@ -46,6 +53,8 @@ public final class CompassService {
     }
 
     public ItemStack createCompass() {
+        // The persistent-data marker lets the plugin distinguish its compasses from vanilla ones so
+        // death-drop cleanup and retargeting remain precise.
         ItemStack compass = new ItemStack(Material.COMPASS);
         CompassMeta meta = (CompassMeta) compass.getItemMeta();
         meta.displayName(Text.mm(config.compassName()));
@@ -59,13 +68,27 @@ public final class CompassService {
     }
 
     public void giveCompass(Collection<Player> players) {
+        // Hunters should have exactly one plugin compass. This method is safe to call on match
+        // start, rejoin, or respawn because it skips players who already carry one.
         ItemStack template = createCompass();
         for (Player player : players) {
-            if (player == null) {
+            if (player == null || hasCompass(player)) {
                 continue;
             }
             player.getInventory().addItem(template.clone());
         }
+    }
+
+    public boolean hasCompass(Player player) {
+        if (player == null) return false;
+        PlayerInventory inventory = player.getInventory();
+        for (ItemStack item : inventory.getContents()) {
+            if (isPluginCompass(item)) return true;
+        }
+        for (ItemStack item : inventory.getArmorContents()) {
+            if (isPluginCompass(item)) return true;
+        }
+        return isPluginCompass(inventory.getItemInOffHand());
     }
 
     public boolean isPluginCompass(ItemStack item) {
@@ -80,6 +103,8 @@ public final class CompassService {
         if (targetProvider == null) {
             return;
         }
+        // Every online player is scanned because plugin compasses can be in any inventory, not only
+        // the inventories of players currently expected to be hunters.
         for (Player player : Bukkit.getOnlinePlayers()) {
             updatePlayerCompasses(player);
         }
@@ -128,7 +153,8 @@ public final class CompassService {
             }
         }
 
-        // If we reach this point, the target has moved to a new block/world. We MUST update.
+        // Once target state differs, clone-and-replace the stack so Bukkit sees a real inventory
+        // mutation and the updated lodestone metadata persists correctly.
         ItemStack clone = item.clone();
         CompassMeta newMeta = (CompassMeta) clone.getItemMeta();
 

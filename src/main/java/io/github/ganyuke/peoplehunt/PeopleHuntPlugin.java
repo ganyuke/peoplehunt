@@ -31,6 +31,13 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
+/**
+ * Plugin entry point.
+ *
+ * <p>The plugin boot sequence is intentionally split into small private methods so startup order is
+ * obvious: load persisted state, construct services, wire circular dependencies, register Bukkit
+ * hooks, then start recurring/background services.
+ */
 public final class PeopleHuntPlugin extends JavaPlugin {
     private Gson gson;
     private PeopleHuntConfig peopleHuntConfig;
@@ -40,6 +47,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         try {
+            // Startup order matters because later services depend on both configuration and
+            // already-loaded persisted state.
             saveDefaultConfig();
             peopleHuntConfig = PeopleHuntConfig.from(getConfig());
             gson = JsonUtil.gson();
@@ -73,6 +82,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     }
 
     private void loadPersistence(Path dataPath) throws IOException {
+        // Long-lived state is stored separately from per-report output so operator-facing settings
+        // survive restarts while after-action reports remain append-only.
         persistence.stateStore = new PersistentStateStore(dataPath.resolve("state/state.json"), gson);
         persistence.stateData = persistence.stateStore.load();
 
@@ -89,12 +100,15 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     }
 
     private void createServices() {
+        // Pure service construction happens before wiring so each object stays easy to reason about.
         services.compassService = new CompassService(this, peopleHuntConfig);
         services.surroundService = new SurroundService();
         services.tickService = new MatchTickService(this, peopleHuntConfig, services.reportService);
     }
 
     private void wireServices() {
+        // MatchManager is the central coordinator for active match state. Other services mostly
+        // project or react to that state.
         services.matchManager = new MatchManager(
                 this,
                 peopleHuntConfig,
@@ -116,6 +130,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     }
 
     private void registerListeners() {
+        // Event listeners are split by concern: lifecycle, gameplay/reporting, movement/compass,
+        // and death-drop cleanup.
         PluginManager pluginManager = getServer().getPluginManager();
         pluginManager.registerEvents(services.movementService, this);
         pluginManager.registerEvents(
@@ -143,6 +159,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     }
 
     private void registerCommands() {
+        // Command handlers are registered explicitly rather than by reflection so missing commands
+        // fail fast during enable.
         PeopleHuntCommand peopleHuntCommand = new PeopleHuntCommand(
                 services.matchManager,
                 services.compassService,
@@ -158,6 +176,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     }
 
     private void reigsterTicking() {
+        // Attribution state needs a per-tick heartbeat for projectile path sampling and short-lived
+        // hazard cleanup.
         Bukkit.getScheduler().scheduleSyncRepeatingTask(this, services.attributionManager::tick, 1L, 1L);
     }
 
@@ -178,6 +198,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     private void stopActiveMatchSafely() {
         try {
             if (services.matchManager != null) {
+                // A server shutdown does not currently support resumable matches, so any active
+                // match is closed as inconclusive before state is saved.
                 services.matchManager.stopInconclusive();
             }
         } catch (Exception exception) {
@@ -187,6 +209,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
 
     private void saveStateSafely() {
         try {
+            // Persist mutable operator state after the match is stopped so saved snapshots reflect
+            // the final session outcome.
             if (persistence.stateStore != null && persistence.stateData != null) {
                 persistence.stateStore.save(persistence.stateData);
             }

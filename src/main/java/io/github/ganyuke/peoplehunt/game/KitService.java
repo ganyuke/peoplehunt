@@ -21,6 +21,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 
+/**
+ * Persists reusable hunter loadouts and reapplies missing kit pieces when a match starts or a
+ * hunter respawns in KIT inventory-control mode.
+ */
 public final class KitService {
     private final Path file;
     private final Gson gson;
@@ -87,6 +91,10 @@ public final class KitService {
         }
         PlayerInventory inventory = player.getInventory();
         Map<String, Integer> alreadyCounted = new HashMap<>();
+
+        // Reapplication is deliberately idempotent. The method only fills missing kit pieces so it
+        // can be safely called both on match start and on later respawns without duplicating items
+        // a player already retained.
         for (KitSlot slot : definition.slots()) {
             ItemStack template = slot.toItem();
             if (template == null || template.getType().isAir()) {
@@ -104,6 +112,11 @@ public final class KitService {
             give.setAmount(remaining);
             if (slot.tryPlace(inventory, give.clone())) {
                 applied.add(give);
+            } else if (slot.isDedicatedEquipmentSlot()) {
+                // KEEP-style restoration never dislodges or duplicates equipped gear. If the
+                // intended armor/offhand slot is already occupied, the missing piece is treated as
+                // unavailable rather than being shoved into storage or dropped on the ground.
+                continue;
             } else {
                 ItemUtil.giveOrDrop(player, give.clone());
                 applied.add(give);
@@ -119,6 +132,8 @@ public final class KitService {
     }
 
     private static KitDefinition fromPlayer(String identifier, Player player) {
+        // A saved kit is a full snapshot of visible inventory layout, including armor and offhand,
+        // so later reapplication can preserve the intended slot arrangement.
         List<KitSlot> slots = new ArrayList<>();
         PlayerInventory inventory = player.getInventory();
         ItemStack[] contents = inventory.getStorageContents();
@@ -175,6 +190,10 @@ public final class KitService {
 
         public ItemStack toItem() {
             return BukkitSerialization.deserializeItem(itemData);
+        }
+
+        public boolean isDedicatedEquipmentSlot() {
+            return kind.startsWith("ARMOR_") || kind.equals("OFFHAND");
         }
 
         public boolean tryPlace(PlayerInventory inventory, ItemStack stack) {

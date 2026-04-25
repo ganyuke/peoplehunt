@@ -38,6 +38,13 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 
+/**
+ * Handles player lifecycle transitions that change match state: joins, deaths, respawns, and the
+ * final dragon kill.
+ *
+ * <p>This listener is where role-specific post-death behavior lives, including inventory-control
+ * policies, deathstreak progression, and the optional End portal return prompt.
+ */
 public class MatchLifecycleListener implements Listener {
     private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
@@ -67,6 +74,8 @@ public class MatchLifecycleListener implements Listener {
         if (session.roles.containsKey(uuid)) {
             Role role = session.roles.get(uuid);
             Bukkit.getScheduler().runTask(plugin, () -> {
+                // Role restoration is deferred one tick so Bukkit has finished constructing the
+                // player's join state before the plugin overwrites game mode or inventory items.
                 if (role == Role.RUNNER || role == Role.HUNTER) player.setGameMode(GameMode.SURVIVAL);
                 else if (config.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
 
@@ -175,16 +184,23 @@ public class MatchLifecycleListener implements Listener {
             if (isRunnerAttributedDeath(session, player, event)) {
                 state.streakDeaths++;
             }
-            state.damageThisLife = 0.0;
+            if (!session.globalFirstHunterDeathRecorded) {
+                session.globalFirstHunterDeathRecorded = true;
+                reportService.recordMilestone(player.getUniqueId(), player.getName(), "first_hunter_death", "First hunter death");
+            }
         }
     }
 
     /**
-     * Returns true if this hunter death should be counted toward the deathstreak,
-     * according to the configured attribution mode.
+     * Returns true if this hunter death should be counted toward the deathstreak.
+     * Deathstreaks only advance on hunter deaths attributed to the runner; hunter damage dealt
+     * during the life does not reset or otherwise modify this counter.
      */
     private boolean isRunnerAttributedDeath(MatchSession session, Player hunter, PlayerDeathEvent event) {
-        MatchSession.Attribution attribution = attributionManager.resolveDeathAttribution(hunter);
+        MatchSession.Attribution attribution = session.lastDeathAttribution.remove(hunter.getUniqueId());
+        if (attribution == null) {
+            attribution = attributionManager.resolveDeathAttribution(hunter);
+        }
         boolean byUuid = attribution != null && session.runnerUuid.equals(attribution.playerUuid());
 
         return switch (config.deathstreakAttributionMode()) {
@@ -219,6 +235,8 @@ public class MatchLifecycleListener implements Listener {
         if (portal == null || portal.getWorld() == null || !portal.getWorld().getUID().equals(player.getWorld().getUID())) return;
         if (player.getLocation().distance(portal) <= config.endPortalRespawnRadius()) return;
 
+        // The teleport is a prompt rather than an automatic move so the hunter can decide whether
+        // returning to the runner's portal is strategically useful.
         session.pendingPortalPrompt.put(player.getUniqueId(), portal.clone());
         Component prompt = Component.text("Teleport to the runner's last End Portal", NamedTextColor.AQUA)
                 .clickEvent(ClickEvent.runCommand("/peoplehunt portal"))
@@ -228,7 +246,8 @@ public class MatchLifecycleListener implements Listener {
 
     /**
      * Applies the active deathstreak tier's item grants to the hunter on respawn.
-     * Saturation and potion effects are applied unconditionally when a tier is active.
+     * Tiers are keyed only by the number of times this hunter has died to the runner. Saturation
+     * and potion effects are applied unconditionally when a tier is active.
      * Item grants are applied slot-aware:
      * <ul>
      *   <li>Armor materials go to the correct armor slot if that slot is empty.</li>

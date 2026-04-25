@@ -16,6 +16,11 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 
+/**
+ * Tracks runner movement for two separate gameplay concerns:
+ * first movement after /prime starts the match, and ongoing movement keeps compass targeting and
+ * cross-dimension last-known-location data current.
+ */
 public class MatchMovementService implements Listener, CompassTargetProvider {
     private final MatchManager matchManager;
     private final PeopleHuntConfig config;
@@ -32,12 +37,8 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
         Location from = event.getFrom();
         Location to = event.getTo();
 
-        if (matchManager.isPrimeActive() && movedPosition(from, to)) {
-            try {
-                matchManager.startNow();
-            } catch (IOException exception) {
-                throw new IllegalStateException("Unable to start match after prime", exception);
-            }
+        if (matchManager.isPrimeActive() && changedBlockOrWorld(from, to)) {
+            startPrimedMatch();
         }
 
         MatchSession session = matchManager.getSession();
@@ -49,14 +50,25 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onTeleport(PlayerTeleportEvent event) {
         if (!event.getPlayer().getUniqueId().equals(matchManager.selectedRunnerUuid())) return;
-        MatchSession session = matchManager.getSession();
-        if (session == null) return;
-
         Location from = event.getFrom();
         Location to = event.getTo();
+        if (matchManager.isPrimeActive() && changedBlockOrWorld(from, to)) {
+            // Teleports are still block movement for match-start purposes. Forced movement,
+            // portal travel, commands, and plugins should all begin a primed run.
+            startPrimedMatch();
+        }
+
+        MatchSession session = matchManager.getSession();
+        if (session == null) return;
         if (from.getWorld() != null && to != null && to.getWorld() != null && !from.getWorld().getUID().equals(to.getWorld().getUID())) {
+            // Store the departure point as the holder-facing last-known location for that source
+            // dimension so compasses can still point somewhere meaningful after dimension changes.
             session.lastKnownRunnerLocations.put(from.getWorld().getUID(), from.clone());
-            if (from.getWorld().getEnvironment() == World.Environment.NORMAL && to.getWorld().getEnvironment() == World.Environment.THE_END) {
+            if (from.getWorld().getEnvironment() == World.Environment.NORMAL
+                    && to.getWorld().getEnvironment() == World.Environment.THE_END
+                    && event.getCause() == PlayerTeleportEvent.TeleportCause.END_PORTAL) {
+                // End-return assistance is based on the actual stronghold End Portal the runner used,
+                // not arbitrary command/plugin teleports into the End.
                 session.lastRunnerOverworldEndPortal = from.clone();
             }
             session.currentRunnerLocation = to.clone();
@@ -79,6 +91,8 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
         if (holder.getWorld().getUID().equals(current.getWorld().getUID())) return current;
 
         if (config.compassDimensionMode() == CompassDimensionMode.LAST_KNOWN && session != null) {
+            // In cross-dimension situations the compass can either clear or point at the last place
+            // the runner was seen in the holder's current dimension.
             Location lastKnown = session.lastKnownRunnerLocations.get(holder.getWorld().getUID());
             if (lastKnown != null) return lastKnown.clone();
         }
@@ -90,7 +104,21 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
         return matchManager.selectedRunnerUuid();
     }
 
-    private boolean movedPosition(Location from, Location to) {
-        return from != null && to != null && (from.getBlockX() != to.getBlockX() || from.getBlockY() != to.getBlockY() || from.getBlockZ() != to.getBlockZ());
+    private void startPrimedMatch() {
+        try {
+            matchManager.startNow();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Unable to start match after prime", exception);
+        }
+    }
+
+    private boolean changedBlockOrWorld(Location from, Location to) {
+        if (from == null || to == null) return false;
+        boolean changedWorld = from.getWorld() != null && to.getWorld() != null
+                && !from.getWorld().getUID().equals(to.getWorld().getUID());
+        return changedWorld
+                || from.getBlockX() != to.getBlockX()
+                || from.getBlockY() != to.getBlockY()
+                || from.getBlockZ() != to.getBlockZ();
     }
 }

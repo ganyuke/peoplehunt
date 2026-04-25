@@ -12,6 +12,12 @@ import org.bukkit.entity.Player;
 public final class SelectorUtil {
     private SelectorUtil() {}
 
+    /**
+     * Resolves a player token using vanilla selectors first and name lookup second.
+     *
+     * <p>A null or blank token means "the sender" for player senders, which keeps command UX terse
+     * for common self-targeting admin actions.
+     */
     public static List<Player> resolvePlayers(CommandSender sender, String token) {
         Set<Player> players = new LinkedHashSet<>();
         if (token == null || token.isBlank()) {

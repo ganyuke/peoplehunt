@@ -38,9 +38,8 @@ deathstreaks:
   # either         — either condition is sufficient
   attribution-mode: UUID_STRICT
   tiers:
-    # Tier 1: full iron kit after 3 runner-attributed deaths
+    # Tier 1: full iron kit after 3 runner-attributed deaths.
     - deaths: 3
-      damage-to-reset: 6.0
       saturation:
         food: 20
         saturation: 6.0
@@ -60,9 +59,8 @@ deathstreaks:
           amount: 1
         - material: IRON_PICKAXE
           amount: 1
-    # Tier 2: stone tools only (no armor) after 6 runner-attributed deaths
+    # Tier 2: intentionally weaker stone tools after 6 runner-attributed deaths.
     - deaths: 6
-      damage-to-reset: 8.0
       saturation:
         food: 20
         saturation: 5.0

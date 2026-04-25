@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -25,7 +26,25 @@ import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+/**
+ * Owns the authoritative match state machine.
+ *
+ * <p>This class separates three operator-visible phases:
+ * <ul>
+ *   <li>idle: player selections and settings only</li>
+ *   <li>primed: waiting for the runner's first movement to begin the run</li>
+ *   <li>active: live match with reporting, compasses, and listener-driven game logic</li>
+ * </ul>
+ * All commands and listeners route through this class when they need to mutate the match model.
+ */
 public final class MatchManager {
+    public enum PrepareMode {
+        HEALTH_AND_HUNGER,
+        STATUS_EFFECTS,
+        EXPERIENCE,
+        INVENTORY
+    }
+
     private static final String HEADER_LINE = "<gray>———— [ <gold><b>%s</b></gold> ] ————</gray>";
     private static final String FOOTER_LINE = "<gray>———————————————————————</gray>";
     private static final String SECTION_PREFIX = "<gray><b>%s</b></gray>";
@@ -106,6 +125,7 @@ public final class MatchManager {
         if (activeSession != null) {
             activeSession.keepInventoryMode = resolved;
             reportService.updateSessionSettings(resolved, activeSession.activeKitId);
+            broadcast(Text.mm("<yellow>Inventory control changed to <white>" + resolved + "</white>.</yellow>"));
         }
         persistQuietly();
     }
@@ -154,42 +174,77 @@ public final class MatchManager {
     }
 
     public boolean toggleHunter(UUID playerUuid) {
+        if (stateData.explicitHunters.contains(playerUuid)) {
+            removeHunter(playerUuid);
+            return false;
+        }
+        return addHunter(playerUuid);
+    }
+
+    public boolean addHunter(UUID playerUuid) {
         if (Objects.equals(stateData.runnerUuid, playerUuid)) {
             return false;
         }
-        boolean nowSelected;
-        if (stateData.explicitHunters.contains(playerUuid)) {
-            stateData.explicitHunters.remove(playerUuid);
-            nowSelected = false;
-        } else {
-            stateData.explicitHunters.add(playerUuid);
-            nowSelected = true;
-        }
+        boolean changed = stateData.explicitHunters.add(playerUuid);
         touchSelections();
         if (activeSession != null) {
             Player player = Bukkit.getPlayer(playerUuid);
-            if (nowSelected && player != null) {
-                addHunterToActiveMatch(player);
-            } else {
-                removeHunterFromActiveMatch(playerUuid);
-            }
+            if (player != null) addHunterToActiveMatch(player);
         }
-        return nowSelected;
+        return changed;
     }
 
-    public void prepare(boolean wipeEffects) {
+    public boolean removeHunter(UUID playerUuid) {
+        if (Objects.equals(stateData.runnerUuid, playerUuid)) {
+            return false;
+        }
+        boolean changed = stateData.explicitHunters.remove(playerUuid);
+        touchSelections();
+        if (activeSession != null) {
+            removeHunterFromActiveMatch(playerUuid);
+        }
+        return changed;
+    }
+
+    public int clearExplicitHunters() {
+        ensureNotActive();
+        int removed = stateData.explicitHunters.size();
+        if (removed > 0) {
+            stateData.explicitHunters.clear();
+            touchSelections();
+        }
+        return removed;
+    }
+
+    public void prepare(EnumSet<PrepareMode> modes) {
+        EnumSet<PrepareMode> resolvedModes = modes == null || modes.isEmpty()
+                ? EnumSet.of(PrepareMode.HEALTH_AND_HUNGER, PrepareMode.STATUS_EFFECTS, PrepareMode.EXPERIENCE)
+                : EnumSet.copyOf(modes);
+
+        // Prepare remains intentionally role-neutral: operators can choose which state buckets to
+        // normalize, but this command never teleports players or changes match roles/game modes.
         for (Player player : resolvePrepareParticipants()) {
-            if (wipeEffects) {
+            if (resolvedModes.contains(PrepareMode.STATUS_EFFECTS)) {
                 player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
+                player.setFireTicks(0);
+                player.setFreezeTicks(0);
             }
-            player.setFireTicks(0);
-            player.setFreezeTicks(0);
-            player.setHealth(player.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue());
-            player.setFoodLevel(20);
-            player.setSaturation(20.0f);
-            player.setTotalExperience(0);
-            player.setLevel(0);
-            player.setExp(0.0f);
+            if (resolvedModes.contains(PrepareMode.HEALTH_AND_HUNGER)) {
+                player.setHealth(player.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue());
+                player.setFoodLevel(20);
+                player.setSaturation(20.0f);
+            }
+            if (resolvedModes.contains(PrepareMode.EXPERIENCE)) {
+                player.setTotalExperience(0);
+                player.setLevel(0);
+                player.setExp(0.0f);
+            }
+            if (resolvedModes.contains(PrepareMode.INVENTORY)) {
+                player.getInventory().clear();
+                player.getInventory().setArmorContents(new org.bukkit.inventory.ItemStack[4]);
+                player.getInventory().setItemInOffHand(null);
+                player.updateInventory();
+            }
         }
     }
 
@@ -210,17 +265,30 @@ public final class MatchManager {
                 player.setExp(0.0f);
             }
         }
+        // Prime stores the runner's starting position and freezes the participant set that will be
+        // kept full while waiting for first movement.
         primeContext = PrimeContext.create(
                 runner.getLocation().clone(),
                 keepPlayersFullOverride == null ? config.primeKeepPlayersFull() : keepPlayersFullOverride,
                 participants
         );
         tickService.startPrimeTask();
+
+        // Notify all participants that the match is primed.
+        String runnerName = runner.getName();
+        broadcast(Text.mm("<aqua><b>Match primed.</b></aqua> <gray>The match will start as soon as <white>"
+                + runnerName + "</white> moves.</gray>"));
+
+        // Give the runner a more prominent, personal heads-up.
+        runner.sendMessage(Text.mm(
+                "<gold><b>You are the runner.</b></gold> <yellow>Move to begin the manhunt!</yellow>"));
     }
 
     public UUID startNow() throws IOException {
         if (activeSession != null) throw new IllegalStateException("A match is already active.");
         Player runner = requireOnlineRunner();
+        // Starting always clears the primed state first so the live session becomes the single
+        // source of truth for runtime logic.
         cancelPrimeInternal();
 
         Set<UUID> hunterIds = resolveNextHunterUuids();
@@ -258,6 +326,8 @@ public final class MatchManager {
                 stateData.activeKitId, config.reportStorageFormat(), participants
         );
 
+        // Active session state is kept entirely in memory; only operator selections/settings are
+        // persisted across restarts.
         activeSession = new MatchSession(
                 reportId,
                 System.currentTimeMillis(),
@@ -333,6 +403,8 @@ public final class MatchManager {
         broadcast(Text.mm("<green>Manhunt ended."));
         result.ifPresent(finish -> {
             String summary = buildFinishedStatsMessage(finish.snapshot());
+            // The formatted summary is cached into persisted state so /peoplehunt status can show
+            // the last finished match even after restart, as long as selections have not changed.
             announceVictoryNextTick(summary);
             stateData.lastStatusSnapshot = new PersistentStateStore.LastStatusSnapshot(
                     finish.indexEntry().reportId(),
@@ -445,6 +517,8 @@ public final class MatchManager {
     }
 
     private Set<UUID> resolveNextHunterUuids() {
+        // Explicit hunter selections win. Otherwise the plugin falls back to the common manhunt
+        // convenience rule: every online non-runner becomes a hunter.
         if (!stateData.explicitHunters.isEmpty()) {
             return stateData.explicitHunters.stream()
                     .filter(uuid -> !Objects.equals(uuid, stateData.runnerUuid))
@@ -477,6 +551,9 @@ public final class MatchManager {
     public void addHunterToActiveMatch(Player player) {
         if (activeSession == null || player == null || player.getUniqueId().equals(activeSession.runnerUuid)) return;
         UUID uuid = player.getUniqueId();
+
+        // Mid-match role changes are applied immediately and also forwarded to report state so the
+        // after-action report reflects late joins and manual admin intervention.
         activeSession.hunterIds.add(uuid);
         activeSession.spectatorIds.remove(uuid);
         activeSession.roles.put(uuid, Role.HUNTER);
@@ -491,6 +568,9 @@ public final class MatchManager {
 
     public void removeHunterFromActiveMatch(UUID uuid) {
         if (activeSession == null || uuid == null || !activeSession.hunterIds.contains(uuid)) return;
+
+        // Removing a hunter demotes them to spectator rather than fully removing them from the
+        // session so their historical activity remains represented in the report.
         activeSession.hunterIds.remove(uuid);
         activeSession.spectatorIds.add(uuid);
         activeSession.roles.put(uuid, Role.SPECTATOR);

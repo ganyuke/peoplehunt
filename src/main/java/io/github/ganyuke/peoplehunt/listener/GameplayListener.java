@@ -1,7 +1,6 @@
 package io.github.ganyuke.peoplehunt.listener;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
-import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakTier;
 import io.github.ganyuke.peoplehunt.game.match.AttributionManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession;
@@ -9,7 +8,6 @@ import io.github.ganyuke.peoplehunt.game.match.MatchSession.Attribution;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.papermc.paper.event.player.AsyncChatEvent;
 
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -102,10 +100,9 @@ public final class GameplayListener implements Listener {
     /**
      * Only player victims matter here because the listener is producing player-centric match
      * reports, and attribution is resolved first so downstream reporting uses one consistent source.
-     * Deathstreak progress is updated on damage rather than on kill because the reset rule is
-     * based on total damage dealt during a life, not just whether a kill happened.
      * First-hit and first-blood are recorded here because direct combat damage is the earliest
-     * reliable point where those combat milestones become true.
+     * reliable point where those combat milestones become true. Deathstreaks are intentionally not
+     * updated from damage anymore; they are based only on deaths attributed to the runner.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByEntity(EntityDamageByEntityEvent event) {
@@ -117,28 +114,10 @@ public final class GameplayListener implements Listener {
 
         recordAttributedDamage(attribution, victim, event.getCause().name(), event.getFinalDamage());
 
-        if (matchManager.isHunter(attribution.playerUuid())) {
-            MatchSession.DeathstreakState state = session.deathstreaks.get(attribution.playerUuid());
-            if (state != null) {
-                state.damageThisLife += event.getFinalDamage();
-                DeathstreakTier activeTier = config.deathstreakTiers().stream()
-                        .filter(t -> state.streakDeaths >= t.deaths())
-                        .max(Comparator.comparingInt(DeathstreakTier::deaths))
-                        .orElse(null);
-
-                if (activeTier != null && state.damageThisLife >= activeTier.damageToReset()) {
-                    state.streakDeaths = 0;
-                    state.damageThisLife = 0.0;
-                    reportService.recordTimeline(attribution.playerUuid(), attribution.playerName(),
-                            "deathstreak", "deathstreak reset by dealing enough damage");
-                }
-            }
-        }
-
         recordMilestoneIfAbsent(session, attribution.playerUuid(), attribution.playerName(), "first_hit", "First hit");
-        if (!session.globalFirstBloodRecorded) {
+        if (victim.getUniqueId().equals(session.runnerUuid) && !session.globalFirstBloodRecorded) {
             session.globalFirstBloodRecorded = true;
-            reportService.recordTimeline(attribution.playerUuid(), attribution.playerName(), "milestone", "First blood");
+            reportService.recordMilestone(attribution.playerUuid(), attribution.playerName(), "first_blood", "First blood on the runner");
         }
     }
 
@@ -208,6 +187,11 @@ public final class GameplayListener implements Listener {
         Attribution attribution = attributionManager.consumeRecentVictimAttribution(player.getUniqueId());
         if (attribution == null) {
             attribution = attributionManager.resolveDeathAttribution(player);
+        }
+
+        MatchSession session = matchManager.getSession();
+        if (session != null && attribution != null) {
+            session.lastDeathAttribution.put(player.getUniqueId(), attribution);
         }
 
         String cause = player.getLastDamageCause() == null
