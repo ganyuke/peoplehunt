@@ -25,11 +25,16 @@ end-portal-respawn:
   enabled: true
   overworld-radius: 64.0
 reporting:
-  storage-format: JSONL
   capture-advancements: true
   web:
     enabled: true
     port: 18765
+  mob-tracking:
+    radius: 32.0
+    stale-radius: 48.0
+    stale-millis: 60000
+rollback:
+  memory-minutes: 5
 deathstreaks:
   enabled: true
   # How deaths are attributed to the runner for streak counting.

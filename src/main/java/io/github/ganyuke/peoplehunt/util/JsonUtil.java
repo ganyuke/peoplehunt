@@ -18,7 +18,7 @@ public final class JsonUtil {
     private static final class UUIDAdapter implements com.google.gson.JsonSerializer<UUID>, com.google.gson.JsonDeserializer<UUID> {
         @Override
         public com.google.gson.JsonElement serialize(UUID src, Type typeOfSrc, com.google.gson.JsonSerializationContext context) {
-            return new com.google.gson.JsonPrimitive(src == null ? null : src.toString());
+            return src == null ? com.google.gson.JsonNull.INSTANCE : new com.google.gson.JsonPrimitive(src.toString());
         }
 
         @Override

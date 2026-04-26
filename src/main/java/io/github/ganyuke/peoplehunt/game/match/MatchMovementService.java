@@ -32,35 +32,25 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
-        if (!event.getPlayer().getUniqueId().equals(matchManager.selectedRunnerUuid())) return;
+        if (!isSelectedRunner(event.getPlayer())) return;
 
         Location from = event.getFrom();
         Location to = event.getTo();
-
-        if (matchManager.isPrimeActive() && changedBlockOrWorld(from, to)) {
-            startPrimedMatch();
-        }
-
-        MatchSession session = matchManager.getSession();
-        if (session != null && to != null) {
-            session.currentRunnerLocation = to.clone();
-        }
+        maybeStartPrimedMatch(from, to);
+        updateCurrentRunnerLocation(to);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onTeleport(PlayerTeleportEvent event) {
-        if (!event.getPlayer().getUniqueId().equals(matchManager.selectedRunnerUuid())) return;
+        if (!isSelectedRunner(event.getPlayer())) return;
+
         Location from = event.getFrom();
         Location to = event.getTo();
-        if (matchManager.isPrimeActive() && changedBlockOrWorld(from, to)) {
-            // Teleports are still block movement for match-start purposes. Forced movement,
-            // portal travel, commands, and plugins should all begin a primed run.
-            startPrimedMatch();
-        }
+        maybeStartPrimedMatch(from, to);
 
         MatchSession session = matchManager.getSession();
-        if (session == null) return;
-        if (from.getWorld() != null && to != null && to.getWorld() != null && !from.getWorld().getUID().equals(to.getWorld().getUID())) {
+        if (session == null || from.getWorld() == null || to.getWorld() == null) return;
+        if (!from.getWorld().getUID().equals(to.getWorld().getUID())) {
             // Store the departure point as the holder-facing last-known location for that source
             // dimension so compasses can still point somewhere meaningful after dimension changes.
             session.lastKnownRunnerLocations.put(from.getWorld().getUID(), from.clone());
@@ -71,7 +61,26 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
                 // not arbitrary command/plugin teleports into the End.
                 session.lastRunnerOverworldEndPortal = from.clone();
             }
-            session.currentRunnerLocation = to.clone();
+        }
+        updateCurrentRunnerLocation(to);
+    }
+
+    private boolean isSelectedRunner(Player player) {
+        return player.getUniqueId().equals(matchManager.selectedRunnerUuid());
+    }
+
+    private void maybeStartPrimedMatch(Location from, Location to) {
+        // Primed matches begin on the runner's first real displacement. Treat teleports the same
+        // way as movement here so plugins, portals, and commands cannot sidestep the prime state.
+        if (matchManager.isPrimeActive() && changedBlockOrWorld(from, to)) {
+            startPrimedMatch();
+        }
+    }
+
+    private void updateCurrentRunnerLocation(Location location) {
+        MatchSession session = matchManager.getSession();
+        if (session != null && location != null) {
+            session.currentRunnerLocation = location.clone();
         }
     }
 

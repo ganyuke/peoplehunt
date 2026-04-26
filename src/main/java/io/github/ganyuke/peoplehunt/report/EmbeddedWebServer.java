@@ -33,11 +33,20 @@ public final class EmbeddedWebServer {
     }
 
     public String renderViewerHtml(String reportId) {
-        return viewerAssets.render(reportId);
+        try {
+            UUID uuid = UUID.fromString(reportId);
+            return viewerAssets.render(reportId, gson.toJson(reportService.readSnapshot(uuid)));
+        } catch (Exception ignored) {
+            return viewerAssets.render(reportId, "null");
+        }
     }
 
-    public String renderExportHtml() {
-        return viewerAssets.render("LOCAL_EXPORT");
+    public String renderExportHtml(UUID reportId) {
+        try {
+            return viewerAssets.render("LOCAL_EXPORT", gson.toJson(reportService.readSnapshot(reportId)));
+        } catch (Exception ignored) {
+            return viewerAssets.render("LOCAL_EXPORT", "null");
+        }
     }
 
     private void createContexts() {

@@ -1,29 +1,200 @@
+import java.net.URI
+import groovy.json.JsonSlurper
+
 plugins {
     id 'java'
-    id("xyz.jpenilla.run-paper") version "2.3.1"
+    id('xyz.jpenilla.run-paper') version '2.3.1'
 }
 
 group = 'io.github.ganyuke'
 version = '0.1.0'
 
+def minecraftGameVersion = (findProperty('minecraftGameVersion') ?: '1.21.11').toString()
+def preactVersion = (findProperty('preactVersion') ?: '10.26.4').toString()
+def htmVersion = (findProperty('htmVersion') ?: '3.1.1').toString()
+def mojangVersionManifestUrl = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
+def generatedResourcesRoot = layout.buildDirectory.dir('generated/resources/main')
+def generatedLangDir = layout.buildDirectory.dir('generated/resources/main/lang')
+def generatedWebDir = layout.buildDirectory.dir('generated/resources/main/web')
+def cachedLangFile = layout.projectDirectory.file(".gradle/peoplehunt/cache/lang/${minecraftGameVersion}/en_us.json")
+def cachedClientJar = layout.projectDirectory.file(".gradle/peoplehunt/cache/lang/${minecraftGameVersion}/client.jar")
+def frontendCacheRoot = layout.projectDirectory.dir('.gradle/peoplehunt/cache/frontend')
+
+// Mojang's launcher metadata is the source of truth for both version metadata and
+// downloadable artifacts. These helpers keep the network logic in one place so the
+// Gradle tasks below stay readable.
+def fetchJson = { String url ->
+    URLConnection connection = URI.create(url).toURL().openConnection()
+    connection.setConnectTimeout(15000)
+    connection.setReadTimeout(30000)
+    connection.setRequestProperty('Accept', 'application/json')
+    connection.getInputStream().withCloseable { stream ->
+        new JsonSlurper().parse(new InputStreamReader(stream, 'UTF-8'))
+    }
+}
+
+def downloadFile = { String url, File destination ->
+    URLConnection connection = URI.create(url).toURL().openConnection()
+    connection.setConnectTimeout(15000)
+    connection.setReadTimeout(30000)
+    destination.parentFile.mkdirs()
+    connection.getInputStream().withCloseable { stream ->
+        destination.withOutputStream { output ->
+            output << stream
+        }
+    }
+}
+
+def readUtf8 = { File file -> file.getText('UTF-8') }
+
 repositories {
     mavenCentral()
     maven {
-        name = "papermc-repo"
-        url = "https://repo.papermc.io/repository/maven-public/"
+        name = 'papermc-repo'
+        url = 'https://repo.papermc.io/repository/maven-public/'
     }
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    // Paper API currently brings in older build-time transitive libraries that local
+    // inspection flags. Constrain them here so Gradle resolves safer versions during
+    // compilation without changing the plugin's packaged runtime.
+    constraints {
+        compileOnly('org.apache.commons:commons-lang3:3.20.0')
+        compileOnly('org.codehaus.plexus:plexus-utils:4.0.2')
+    }
+
+    compileOnly("io.papermc.paper:paper-api:${minecraftGameVersion}-R0.1-SNAPSHOT")
 }
 
 tasks {
     runServer {
-        // Configure the Minecraft version for our task.
-        // This is the only required configuration besides applying the plugin.
-        // Your plugin's jar (or shadowJar if present) will be used automatically.
-        minecraftVersion("1.21.11")
+        minecraftVersion(minecraftGameVersion)
+    }
+}
+
+tasks.register('syncOfficialMinecraftEnglish') {
+    // Extract the language file directly from the official client jar.
+    // Mojang's asset index has moved around enough across versions that jar extraction
+    // is simpler and more robust than depending on a particular asset-index key shape.
+    description = 'Downloads the official Mojang en_us.json for the configured Minecraft version and stages it into generated resources.'
+    outputs.file(generatedLangDir.map { it.file('en_us.json') })
+    doLast {
+        File cacheFile = cachedLangFile.asFile
+        File clientJarFile = cachedClientJar.asFile
+        boolean refresh = project.hasProperty('refreshMinecraftEnglish')
+        if (refresh || !cacheFile.exists()) {
+            logger.lifecycle('Resolving official Minecraft language assets for {}', minecraftGameVersion)
+            def manifest = fetchJson(mojangVersionManifestUrl)
+            def versionEntry = manifest.versions.find { it.id == minecraftGameVersion }
+            if (versionEntry == null) {
+                throw new GradleException("Minecraft version ${minecraftGameVersion} was not found in Mojang's version manifest.")
+            }
+            def versionMetadata = fetchJson(versionEntry.url.toString())
+            String clientUrl = versionMetadata?.downloads?.client?.url?.toString()
+            if (!clientUrl) {
+                throw new GradleException("Could not resolve the client download URL for Minecraft ${minecraftGameVersion} from Mojang version metadata.")
+            }
+            if (refresh || !clientJarFile.exists()) {
+                downloadFile(clientUrl, clientJarFile)
+            }
+            clientJarFile.parentFile.mkdirs()
+            def zip = new java.util.zip.ZipFile(clientJarFile)
+            try {
+                def entry = zip.getEntry('assets/minecraft/lang/en_us.json')
+                if (entry == null) {
+                    throw new GradleException("Could not locate assets/minecraft/lang/en_us.json inside the Minecraft client jar for ${minecraftGameVersion}.")
+                }
+                cacheFile.parentFile.mkdirs()
+                zip.getInputStream(entry).withCloseable { input ->
+                    cacheFile.withOutputStream { output ->
+                        output << input
+                    }
+                }
+            } finally {
+                zip.close()
+            }
+        }
+
+        File generatedDir = generatedLangDir.get().asFile
+        generatedDir.mkdirs()
+        File generatedFile = new File(generatedDir, 'en_us.json')
+        generatedFile.text = readUtf8(cacheFile)
+    }
+}
+
+def frontendArtifacts = [
+        [name: 'preact',       version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/dist/preact.umd.js",           licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],
+        [name: 'preact-hooks', version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/hooks/dist/hooks.umd.js",      licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],
+        [name: 'htm',          version: htmVersion,    url: "https://unpkg.com/htm@${htmVersion}/dist/htm.umd.js",                    licenseUrl: "https://unpkg.com/htm@${htmVersion}/LICENSE"]
+]
+
+tasks.register('syncViewerFrontendAssets') {
+    description = 'Downloads vendored Preact and htm assets plus license texts for the self-contained report viewer.'
+    outputs.files(frontendArtifacts.collect { artifact -> generatedWebDir.map { it.file("vendor/${artifact.name}.js") } })
+    outputs.file(generatedWebDir.map { it.file('THIRD_PARTY_LICENSES.txt') })
+    doLast {
+        boolean refresh = project.hasProperty('refreshViewerFrontend')
+        File generatedVendorDir = new File(generatedWebDir.get().asFile, 'vendor')
+        generatedVendorDir.mkdirs()
+        StringBuilder notices = new StringBuilder()
+        notices.append('PeopleHunt embedded report viewer third-party assets\n')
+        notices.append('==============================================\n\n')
+        frontendArtifacts.each { artifact ->
+            File cacheDir = new File(frontendCacheRoot.asFile, "${artifact.name}/${artifact.version}")
+            File cachedScript = new File(cacheDir, "${artifact.name}.js")
+            File cachedLicense = new File(cacheDir, 'LICENSE')
+            if (refresh || !cachedScript.exists()) {
+                logger.lifecycle('Downloading {} {}', artifact.name, artifact.version)
+                downloadFile(artifact.url, cachedScript)
+            }
+            if (refresh || !cachedLicense.exists()) {
+                downloadFile(artifact.licenseUrl, cachedLicense)
+            }
+            File generatedScript = new File(generatedVendorDir, "${artifact.name}.js")
+            generatedScript.text = readUtf8(cachedScript)
+            notices.append(artifact.name).append(' ').append(artifact.version).append('\n')
+                    .append('Source: ').append(artifact.url).append('\n')
+                    .append('License source: ').append(artifact.licenseUrl).append('\n\n')
+                    .append(readUtf8(cachedLicense).trim()).append('\n\n')
+                    .append('----------------------------------------------\n\n')
+        }
+        File licenseFile = new File(generatedWebDir.get().asFile, 'THIRD_PARTY_LICENSES.txt')
+        licenseFile.parentFile.mkdirs()
+        licenseFile.text = notices.toString()
+    }
+}
+
+tasks.register('buildInlineViewer') {
+    // The shipped viewer is a single self-contained HTML resource. Build-time inlining
+    // keeps runtime serving trivial and avoids depending on a CDN or external assets.
+    description = 'Builds the self-contained Preact report viewer HTML with vendored frontend assets inlined.'
+    dependsOn(tasks.named('syncViewerFrontendAssets'))
+    outputs.file(generatedWebDir.map { it.file('viewer.inline.html') })
+    doLast {
+        File webSourceDir = file('src/main/resources/web')
+        File templateFile = new File(webSourceDir, 'viewer.template.html')
+        File cssFile = new File(webSourceDir, 'viewer.css')
+        File appFile = new File(webSourceDir, 'viewer-app.js')
+        if (!templateFile.exists()) throw new GradleException('Missing viewer.template.html source resource.')
+        if (!cssFile.exists()) throw new GradleException('Missing viewer.css source resource.')
+        if (!appFile.exists()) throw new GradleException('Missing viewer-app.js source resource.')
+
+        File vendorDir = new File(generatedWebDir.get().asFile, 'vendor')
+        String vendorBundle = [
+                new File(vendorDir, 'preact.js'),
+                new File(vendorDir, 'preact-hooks.js'),
+                new File(vendorDir, 'htm.js')
+        ].collect { file -> readUtf8(file) }.join('\n\n')
+
+        String html = readUtf8(templateFile)
+                .replace('__INLINE_CSS__', readUtf8(cssFile))
+                .replace('__INLINE_VENDOR_JS__', vendorBundle)
+                .replace('__INLINE_APP_JS__', readUtf8(appFile))
+
+        File output = new File(generatedWebDir.get().asFile, 'viewer.inline.html')
+        output.parentFile.mkdirs()
+        output.text = html
     }
 }
 
@@ -39,16 +210,33 @@ java {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-
     if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible()) {
         options.release.set(targetJavaVersion)
     }
 }
 
 processResources {
+    dependsOn(tasks.named('syncOfficialMinecraftEnglish'))
+    dependsOn(tasks.named('buildInlineViewer'))
+    dependsOn(tasks.named('syncViewerFrontendAssets'))
+
     def props = [version: version]
     inputs.properties props
     filteringCharset 'UTF-8'
+
+    exclude('lang/en_us.json')
+    exclude('web/viewer.template.html')
+    exclude('web/viewer-app.js')
+    exclude('web/viewer.html')
+    exclude('web/viewer.js')
+    exclude('web/viewer.css')
+
+    from(generatedResourcesRoot) {
+        include 'lang/en_us.json'
+        include 'web/viewer.inline.html'
+        include 'web/THIRD_PARTY_LICENSES.txt'
+    }
+
     filesMatching('plugin.yml') {
         expand props
     }

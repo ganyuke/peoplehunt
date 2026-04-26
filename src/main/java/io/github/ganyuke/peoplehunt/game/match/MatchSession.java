@@ -2,6 +2,7 @@ package io.github.ganyuke.peoplehunt.game.match;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -45,12 +46,20 @@ public class MatchSession {
     // Overworld, allowing them to return near the runner's most recent End portal.
     public final Map<UUID, Location> pendingPortalPrompt = new HashMap<>();
     public final Map<UUID, Location> lastKnownRunnerLocations = new HashMap<>();
+    public final Map<UUID, String> lastSampleGameModes = new HashMap<>();
+    public final Map<UUID, String> lastSampleWorlds = new HashMap<>();
+    public final Set<UUID> pendingTeleportPathFlags = new LinkedHashSet<>();
+    public final Map<UUID, PendingPortalArrival> pendingPortalArrivals = new HashMap<>();
     public final Set<UUID> diedInEnd = new LinkedHashSet<>();
+    public final Map<UUID, Deque<RollbackState>> rollbackBuffer = new HashMap<>();
     public Location currentRunnerLocation;
     public Location lastRunnerOverworldEndPortal;
 
     // --- GameplayListener Ephemeral State ---
     public final Map<UUID, ProjectileAttribution> trackedProjectiles = new HashMap<>();
+    public final Map<UUID, HostileProjectileAttribution> trackedHostileProjectiles = new HashMap<>();
+    public final Map<UUID, TrackedMobState> trackedMobs = new HashMap<>();
+    public final Set<UUID> seenEndCrystals = new LinkedHashSet<>();
     public final Map<UUID, Attribution> recentVictimAttribution = new HashMap<>();
     public final Map<BlockKey, Attribution> lavaSources = new HashMap<>();
     public final List<Attribution> recentExplosiveHazards = new ArrayList<>();
@@ -99,4 +108,46 @@ public class MatchSession {
             return new BlockKey(block.getWorld().getUID(), block.getX(), block.getY(), block.getZ());
         }
     }
+
+
+    public record HostileProjectileAttribution(String shooterEntityType, UUID targetPlayerUuid, String targetPlayerName, String weapon) {}
+
+    public record PendingPortalArrival(String causeName, long recordedAtEpochMillis) {}
+
+    public static final class TrackedMobState {
+        public final UUID entityUuid;
+        public final String entityType;
+        public UUID targetPlayerUuid;
+        public String targetPlayerName;
+        public long lastSeenEpochMillis;
+
+        public TrackedMobState(UUID entityUuid, String entityType, UUID targetPlayerUuid, String targetPlayerName, long lastSeenEpochMillis) {
+            this.entityUuid = entityUuid;
+            this.entityType = entityType;
+            this.targetPlayerUuid = targetPlayerUuid;
+            this.targetPlayerName = targetPlayerName;
+            this.lastSeenEpochMillis = lastSeenEpochMillis;
+        }
+    }
+
+    public record RollbackState(
+            long capturedAtEpochMillis,
+            Location location,
+            org.bukkit.GameMode gameMode,
+            double health,
+            double maxHealth,
+            double absorption,
+            int food,
+            float saturation,
+            int level,
+            int totalExperience,
+            List<ItemStack> contents,
+            ItemStack helmet,
+            ItemStack chestplate,
+            ItemStack leggings,
+            ItemStack boots,
+            ItemStack offHand,
+            List<org.bukkit.potion.PotionEffect> effects
+    ) {}
+
 }

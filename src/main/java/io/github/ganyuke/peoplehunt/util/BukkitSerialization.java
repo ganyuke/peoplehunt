@@ -1,14 +1,9 @@
 package io.github.ganyuke.peoplehunt.util;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.util.io.BukkitObjectInputStream;
-import org.bukkit.util.io.BukkitObjectOutputStream;
 
 public final class BukkitSerialization {
     private BukkitSerialization() {}
@@ -17,27 +12,14 @@ public final class BukkitSerialization {
         if (itemStack == null) {
             return null;
         }
-        try (ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
-             BukkitObjectOutputStream out = new BukkitObjectOutputStream(byteOut)) {
-            out.writeObject(itemStack);
-            out.flush();
-            return Base64.getEncoder().encodeToString(byteOut.toByteArray());
-        } catch (IOException exception) {
-            throw new IllegalStateException("Unable to serialize item stack", exception);
-        }
+        return Base64.getEncoder().encodeToString(itemStack.serializeAsBytes());
     }
 
     public static ItemStack deserializeItem(String encoded) {
         if (encoded == null || encoded.isBlank()) {
             return null;
         }
-        try (ByteArrayInputStream byteIn = new ByteArrayInputStream(Base64.getDecoder().decode(encoded));
-             BukkitObjectInputStream in = new BukkitObjectInputStream(byteIn)) {
-            Object value = in.readObject();
-            return value instanceof ItemStack itemStack ? itemStack : null;
-        } catch (IOException | ClassNotFoundException exception) {
-            throw new IllegalStateException("Unable to deserialize item stack", exception);
-        }
+        return ItemStack.deserializeBytes(Base64.getDecoder().decode(encoded));
     }
 
     public static List<String> serializeItems(List<ItemStack> items) {

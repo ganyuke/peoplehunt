@@ -2,11 +2,12 @@ package io.github.ganyuke.peoplehunt.config;
 
 import io.github.ganyuke.peoplehunt.game.compass.CompassDimensionMode;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
-import io.github.ganyuke.peoplehunt.report.ReportStorageFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.potion.PotionEffectType;
@@ -23,10 +24,13 @@ public final class PeopleHuntConfig {
     private final boolean applyKitOnStart;
     private final boolean endPortalRespawnEnabled;
     private final double endPortalRespawnRadius;
-    private final ReportStorageFormat reportStorageFormat;
     private final boolean captureAdvancements;
     private final boolean webEnabled;
     private final int webPort;
+    private final int rollbackMemoryMinutes;
+    private final double mobTrackRadius;
+    private final double mobStaleRadius;
+    private final long mobStaleMillis;
     private final boolean deathstreaksEnabled;
     private final DeathstreakAttributionMode deathstreakAttributionMode;
     private final List<DeathstreakTier> deathstreakTiers;
@@ -44,10 +48,13 @@ public final class PeopleHuntConfig {
             boolean applyKitOnStart,
             boolean endPortalRespawnEnabled,
             double endPortalRespawnRadius,
-            ReportStorageFormat reportStorageFormat,
             boolean captureAdvancements,
             boolean webEnabled,
             int webPort,
+            int rollbackMemoryMinutes,
+            double mobTrackRadius,
+            double mobStaleRadius,
+            long mobStaleMillis,
             boolean deathstreaksEnabled,
             DeathstreakAttributionMode deathstreakAttributionMode,
             List<DeathstreakTier> deathstreakTiers,
@@ -64,10 +71,13 @@ public final class PeopleHuntConfig {
         this.applyKitOnStart = applyKitOnStart;
         this.endPortalRespawnEnabled = endPortalRespawnEnabled;
         this.endPortalRespawnRadius = endPortalRespawnRadius;
-        this.reportStorageFormat = reportStorageFormat;
         this.captureAdvancements = captureAdvancements;
         this.webEnabled = webEnabled;
         this.webPort = webPort;
+        this.rollbackMemoryMinutes = rollbackMemoryMinutes;
+        this.mobTrackRadius = mobTrackRadius;
+        this.mobStaleRadius = mobStaleRadius;
+        this.mobStaleMillis = mobStaleMillis;
         this.deathstreaksEnabled = deathstreaksEnabled;
         this.deathstreakAttributionMode = deathstreakAttributionMode;
         this.deathstreakTiers = List.copyOf(deathstreakTiers);
@@ -106,10 +116,13 @@ public final class PeopleHuntConfig {
                 config.getBoolean("kit.apply-on-start", true),
                 config.getBoolean("end-portal-respawn.enabled", true),
                 config.getDouble("end-portal-respawn.overworld-radius", 64.0),
-                ReportStorageFormat.valueOf(config.getString("reporting.storage-format", "JSONL").toUpperCase()),
                 config.getBoolean("reporting.capture-advancements", true),
                 config.getBoolean("reporting.web.enabled", true),
                 config.getInt("reporting.web.port", 18765),
+                config.getInt("rollback.memory-minutes", 5),
+                config.getDouble("reporting.mob-tracking.radius", 32.0),
+                config.getDouble("reporting.mob-tracking.stale-radius", 48.0),
+                config.getLong("reporting.mob-tracking.stale-millis", 60000L),
                 config.getBoolean("deathstreaks.enabled", true),
                 parseAttributionMode(config.getString("deathstreaks.attribution-mode", "UUID_STRICT")),
                 tiers,
@@ -178,9 +191,6 @@ public final class PeopleHuntConfig {
         return endPortalRespawnRadius;
     }
 
-    public ReportStorageFormat reportStorageFormat() {
-        return reportStorageFormat;
-    }
 
     public boolean captureAdvancements() {
         return captureAdvancements;
@@ -192,6 +202,22 @@ public final class PeopleHuntConfig {
 
     public int webPort() {
         return webPort;
+    }
+
+    public int rollbackMemoryMinutes() {
+        return rollbackMemoryMinutes;
+    }
+
+    public double mobTrackRadius() {
+        return mobTrackRadius;
+    }
+
+    public double mobStaleRadius() {
+        return mobStaleRadius;
+    }
+
+    public long mobStaleMillis() {
+        return mobStaleMillis;
     }
 
     public boolean deathstreaksEnabled() {
@@ -300,8 +326,7 @@ public final class PeopleHuntConfig {
     public record PotionGrant(PotionEffectType type, int durationSeconds, int amplifier) {
         public static PotionGrant fromMap(java.util.Map<?, ?> map) {
             String key = stringValue(map, "type", "SPEED");
-            // TODO: replace getByName() with post-1.20.3 non-deprecated technique
-            PotionEffectType effectType = PotionEffectType.getByName(key.toUpperCase());
+            PotionEffectType effectType = Registry.EFFECT.get(NamespacedKey.minecraft(key.toLowerCase()));
             if (effectType == null) {
                 effectType = PotionEffectType.SPEED;
             }

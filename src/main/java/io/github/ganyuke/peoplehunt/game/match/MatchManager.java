@@ -21,9 +21,12 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
+import org.bukkit.attribute.Attribute;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
@@ -230,7 +233,7 @@ public final class MatchManager {
                 player.setFreezeTicks(0);
             }
             if (resolvedModes.contains(PrepareMode.HEALTH_AND_HUNGER)) {
-                player.setHealth(player.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue());
+                player.setHealth(maxHealth(player));
                 player.setFoodLevel(20);
                 player.setSaturation(20.0f);
             }
@@ -257,7 +260,7 @@ public final class MatchManager {
         for (UUID uuid : participants) {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null) {
-                player.setHealth(player.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH).getValue());
+                player.setHealth(maxHealth(player));
                 player.setFoodLevel(20);
                 player.setSaturation(20.0f);
                 player.setTotalExperience(0);
@@ -323,7 +326,7 @@ public final class MatchManager {
 
         UUID reportId = reportService.startSession(
                 runner.getUniqueId(), runner.getName(), stateData.inventoryControlMode,
-                stateData.activeKitId, config.reportStorageFormat(), participants
+                stateData.activeKitId, participants
         );
 
         // Active session state is kept entirely in memory; only operator selections/settings are
@@ -349,6 +352,11 @@ public final class MatchManager {
             activeSession.lifeIndex.put(spectatorId, 1);
         }
 
+        for (World world : Bukkit.getWorlds()) {
+            Location spawn = world.getSpawnLocation();
+            reportService.recordMarker("world_spawn", null, null, spawn, "World Spawn", "World spawn in " + io.github.ganyuke.peoplehunt.util.PrettyNames.key(world.getKey().asString()), "#9ca3af");
+        }
+
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (player.getUniqueId().equals(runner.getUniqueId())) {
                 activeSession.roles.put(player.getUniqueId(), Role.RUNNER);
@@ -367,6 +375,12 @@ public final class MatchManager {
         }
 
         tickService.startRuntimeTasks();
+        for (UUID uuid : new ArrayList<>(activeSession.roles.keySet())) {
+            Player sampled = Bukkit.getPlayer(uuid);
+            if (sampled != null) {
+                tickService.captureImmediateSample(sampled);
+            }
+        }
         broadcast(Text.mm("<green>Manhunt started."));
         reportService.recordTimeline(runner.getUniqueId(), runner.getName(), "match", "Manhunt started");
         persistQuietly();
@@ -738,4 +752,82 @@ public final class MatchManager {
         MatchSession session = this.getSession();
         return session == null ? Optional.empty() : Optional.ofNullable(session.pendingPortalPrompt.remove(uuid));
     }
+
+
+    public int rollback(UUID targetUuid, long rewindMillis, boolean teleport, boolean restoreGameMode, boolean restoreEffects) {
+        if (activeSession == null) {
+            throw new IllegalStateException("No active match to roll back.");
+        }
+        long targetTime = System.currentTimeMillis() - Math.max(0L, rewindMillis);
+        int restored = 0;
+        for (UUID uuid : new ArrayList<>(activeSession.roles.keySet())) {
+            if (targetUuid != null && !targetUuid.equals(uuid)) continue;
+            Player player = Bukkit.getPlayer(uuid);
+            if (player == null) continue;
+            MatchSession.RollbackState state = chooseRollbackState(activeSession.rollbackBuffer.get(uuid), targetTime);
+            if (state == null) continue;
+            applyRollbackState(player, state, teleport, restoreGameMode, restoreEffects);
+            reportService.recordTimeline(uuid, player.getName(), "rollback", "rolled back by operator to " + Text.formatDurationMillis(Math.max(0L, rewindMillis)) + " ago", Long.toString(rewindMillis), "#fca5a5");
+            restored++;
+        }
+        return restored;
+    }
+
+    private MatchSession.RollbackState chooseRollbackState(java.util.Deque<MatchSession.RollbackState> buffer, long targetTime) {
+        if (buffer == null || buffer.isEmpty()) {
+            return null;
+        }
+        MatchSession.RollbackState candidate = buffer.peekFirst();
+        for (MatchSession.RollbackState state : buffer) {
+            if (state.capturedAtEpochMillis() <= targetTime) {
+                candidate = state;
+                continue;
+            }
+            break;
+        }
+        return candidate;
+    }
+
+    private double maxHealth(Player player) {
+        var attribute = player.getAttribute(Attribute.MAX_HEALTH);
+        return attribute == null ? player.getHealth() : attribute.getValue();
+    }
+
+    private void applyRollbackState(Player player, MatchSession.RollbackState state, boolean teleport, boolean restoreGameMode, boolean restoreEffects) {
+        if (teleport && state.location() != null && state.location().getWorld() != null) {
+            player.teleport(state.location());
+        }
+        if (restoreGameMode && state.gameMode() != null) {
+            player.setGameMode(state.gameMode());
+        }
+        player.getInventory().clear();
+        ItemStack[] contents = new ItemStack[player.getInventory().getSize()];
+        for (int i = 0; i < contents.length && i < state.contents().size(); i++) {
+            ItemStack item = state.contents().get(i);
+            contents[i] = item == null ? null : item.clone();
+        }
+        player.getInventory().setContents(contents);
+        player.getInventory().setHelmet(state.helmet() == null ? null : state.helmet().clone());
+        player.getInventory().setChestplate(state.chestplate() == null ? null : state.chestplate().clone());
+        player.getInventory().setLeggings(state.leggings() == null ? null : state.leggings().clone());
+        player.getInventory().setBoots(state.boots() == null ? null : state.boots().clone());
+        player.getInventory().setItemInOffHand(state.offHand() == null ? null : state.offHand().clone());
+        var maxHealthAttribute = player.getAttribute(Attribute.MAX_HEALTH);
+        double maxHealth = maxHealthAttribute == null ? state.maxHealth() : maxHealthAttribute.getValue();
+        player.setAbsorptionAmount(state.absorption());
+        player.setHealth(Math.max(0.1, Math.min(maxHealth, state.health())));
+        player.setFoodLevel(state.food());
+        player.setSaturation(state.saturation());
+        player.setLevel(state.level());
+        player.setTotalExperience(state.totalExperience());
+        if (restoreEffects) {
+            for (var effect : player.getActivePotionEffects()) {
+                player.removePotionEffect(effect.getType());
+            }
+            for (var effect : state.effects()) {
+                player.addPotionEffect(effect);
+            }
+        }
+    }
+
 }

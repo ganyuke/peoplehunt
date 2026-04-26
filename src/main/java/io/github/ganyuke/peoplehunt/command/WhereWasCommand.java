@@ -14,7 +14,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 public final class WhereWasCommand implements CommandExecutor, TabCompleter {
     private final WhereWasStore whereWasStore;
@@ -102,7 +101,7 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
     }
 
     @Override
-    public @Nullable List<String> onTabComplete(
+    public @NotNull List<String> onTabComplete(
             @NotNull CommandSender sender,
             @NotNull Command command,
             @NotNull String alias,

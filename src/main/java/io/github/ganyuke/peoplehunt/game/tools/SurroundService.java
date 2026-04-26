@@ -23,7 +23,7 @@ public final class SurroundService {
     );
 
     public void surround(Player runner, List<Player> hunters, double minRadius, Double maxRadius) {
-        if (runner == null || hunters.isEmpty() || runner.getWorld() == null) {
+        if (runner == null || hunters.isEmpty()) {
             return;
         }
         double effectiveMax = maxRadius == null ? minRadius : Math.max(maxRadius, minRadius);

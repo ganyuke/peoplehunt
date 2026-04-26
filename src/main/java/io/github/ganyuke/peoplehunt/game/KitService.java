@@ -112,12 +112,7 @@ public final class KitService {
             give.setAmount(remaining);
             if (slot.tryPlace(inventory, give.clone())) {
                 applied.add(give);
-            } else if (slot.isDedicatedEquipmentSlot()) {
-                // KEEP-style restoration never dislodges or duplicates equipped gear. If the
-                // intended armor/offhand slot is already occupied, the missing piece is treated as
-                // unavailable rather than being shoved into storage or dropped on the ground.
-                continue;
-            } else {
+            } else if (!slot.isDedicatedEquipmentSlot()) {
                 ItemUtil.giveOrDrop(player, give.clone());
                 applied.add(give);
             }
@@ -154,8 +149,9 @@ public final class KitService {
         if (inventory.getBoots() != null && !inventory.getBoots().getType().isAir()) {
             slots.add(KitSlot.armor("FEET", inventory.getBoots()));
         }
-        if (inventory.getItemInOffHand() != null && !inventory.getItemInOffHand().getType().isAir()) {
-            slots.add(KitSlot.offhand(inventory.getItemInOffHand()));
+        ItemStack offHand = inventory.getItemInOffHand();
+        if (!offHand.getType().isAir()) {
+            slots.add(KitSlot.offhand(offHand));
         }
         return new KitDefinition(identifier, slots);
     }

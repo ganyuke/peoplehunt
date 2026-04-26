@@ -142,7 +142,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                         services.attributionManager,
                         services.kitService,
                         services.compassService,
-                        services.reportService
+                         services.reportService,
+                        services.tickService
                 ),
                 this
         );
@@ -151,7 +152,9 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                         peopleHuntConfig,
                         services.matchManager,
                         services.reportService,
-                        services.attributionManager
+                        services.attributionManager,
+                        this,
+                        services.tickService
                 ),
                 this
         );

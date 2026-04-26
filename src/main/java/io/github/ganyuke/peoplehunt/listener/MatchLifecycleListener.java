@@ -8,6 +8,7 @@ import io.github.ganyuke.peoplehunt.game.KitService;
 import io.github.ganyuke.peoplehunt.game.match.AttributionManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession;
+import io.github.ganyuke.peoplehunt.game.match.MatchTickService;
 import io.github.ganyuke.peoplehunt.game.Role;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.github.ganyuke.peoplehunt.util.ItemUtil;
@@ -53,8 +54,9 @@ public class MatchLifecycleListener implements Listener {
     private final KitService kitService;
     private final CompassService compassService;
     private final ReportService reportService;
+    private final MatchTickService tickService;
 
-    public MatchLifecycleListener(JavaPlugin plugin, PeopleHuntConfig config, MatchManager matchManager, AttributionManager attributionManager, KitService kitService, CompassService compassService, ReportService reportService) {
+    public MatchLifecycleListener(JavaPlugin plugin, PeopleHuntConfig config, MatchManager matchManager, AttributionManager attributionManager, KitService kitService, CompassService compassService, ReportService reportService, MatchTickService tickService) {
         this.plugin = plugin;
         this.config = config;
         this.matchManager = matchManager;
@@ -62,6 +64,7 @@ public class MatchLifecycleListener implements Listener {
         this.kitService = kitService;
         this.compassService = compassService;
         this.reportService = reportService;
+        this.tickService = tickService;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -80,6 +83,7 @@ public class MatchLifecycleListener implements Listener {
                 else if (config.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
 
                 if (role == Role.HUNTER) compassService.giveCompass(List.of(player));
+                tickService.captureImmediateSample(player);
             });
             return;
         }
@@ -90,7 +94,12 @@ public class MatchLifecycleListener implements Listener {
         reportService.registerParticipant(uuid, player.getName(), Role.SPECTATOR.name(), true, true);
         reportService.recordTimeline(uuid, player.getName(), "participant", "joined as spectator");
         if (config.autoSpectateNewJoins()) {
-            Bukkit.getScheduler().runTask(plugin, () -> player.setGameMode(GameMode.SPECTATOR));
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                player.setGameMode(GameMode.SPECTATOR);
+                tickService.captureImmediateSample(player);
+            });
+        } else {
+            Bukkit.getScheduler().runTask(plugin, () -> tickService.captureImmediateSample(player));
         }
     }
 
@@ -124,6 +133,7 @@ public class MatchLifecycleListener implements Listener {
             } else if (config.autoSpectateNewJoins()) {
                 player.setGameMode(GameMode.SPECTATOR);
             }
+            tickService.captureImmediateSample(player);
         });
     }
 
@@ -214,7 +224,7 @@ public class MatchLifecycleListener implements Listener {
         if (event.deathMessage() == null) return false;
         String plain = PlainTextComponentSerializer.plainText().serialize(event.deathMessage());
         String runnerName = matchManager.nameOf(session.runnerUuid);
-        return plain.contains(runnerName);
+        return runnerName != null && plain.contains(runnerName);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

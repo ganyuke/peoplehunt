@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -26,7 +27,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 /**
  * Administrative command surface for the plugin.
@@ -36,6 +36,9 @@ import org.jetbrains.annotations.Nullable;
  * services a one-shot respawn prompt during an active match.
  */
 public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
+    private static final List<String> PREPARE_MODE_SUGGESTIONS = List.of("health", "status", "xp", "inventory");
+    private static final List<String> ROLLBACK_FLAGS = List.of("--tp", "--gamemode", "--no-effects");
+
     private final MatchManager matchManager;
     private final CompassService compassService;
     private final KitService kitService;
@@ -75,6 +78,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "kit"                                 -> handleKit(sender, args);
                 case "inventorycontrol", "ic"              -> handleInventoryControl(sender, args);
                 case "aar"                                 -> handleAar(sender, args);
+                case "rollback"                            -> handleRollback(sender, args);
                 default -> {
                     sender.sendMessage(Component.text("Unknown subcommand.", NamedTextColor.RED));
                     yield true;
@@ -143,7 +147,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleHunter(CommandSender sender, String[] args) {
-        String requestedAction = args.length >= 2 ? args[1].toLowerCase(java.util.Locale.ROOT) : "toggle";
+        String requestedAction = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "toggle";
         if (requestedAction.equals("clear")) {
             int removed = matchManager.clearExplicitHunters();
             sender.sendMessage(Component.text(
@@ -231,25 +235,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleCompass(CommandSender sender, String[] args) {
-        List<Player> targets = args.length >= 2
-                ? SelectorUtil.resolvePlayers(sender, args[1])
-                : SelectorUtil.resolvePlayers(sender, null);
-        if (targets.isEmpty()) {
-            sender.sendMessage(Component.text("No target players matched.", NamedTextColor.RED));
-            return true;
-        }
-        compassService.giveCompass(targets);
-        // Mirrors the standalone /compass command: name for one, count for many.
-        boolean selfOnly = targets.size() == 1
-                && sender instanceof Player player
-                && targets.getFirst().equals(player);
-        if (!selfOnly) {
-            Component message = targets.size() == 1
-                    ? Component.text("Gave compass to " + targets.getFirst().getName() + ".", NamedTextColor.GREEN)
-                    : Component.text("Gave compass to " + targets.size() + " players.", NamedTextColor.GREEN);
-            sender.sendMessage(message);
-        }
-        return true;
+        return CompassCommandSupport.giveCompass(sender, compassService, args.length >= 2 ? args[1] : null);
     }
 
     private boolean handleKit(CommandSender sender, String[] args) throws IOException {
@@ -341,7 +327,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                     NamedTextColor.RED));
             return true;
         }
-        String raw = args[1].toUpperCase(java.util.Locale.ROOT);
+        String raw = args[1].toUpperCase(Locale.ROOT);
         KeepInventoryMode mode;
         try {
             mode = KeepInventoryMode.valueOf(raw);
@@ -359,6 +345,38 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         // setInventoryControlMode already broadcasts if a session is active; confirm to sender.
         sender.sendMessage(Component.text(
                 "✔ Inventory control set to " + mode + ".", NamedTextColor.GREEN));
+        return true;
+    }
+
+
+    private boolean handleRollback(CommandSender sender, String[] args) {
+        if (args.length < 3) {
+            sender.sendMessage(Component.text("Usage: /peoplehunt rollback <all|player> <duration> [--tp] [--gamemode] [--no-effects]", NamedTextColor.RED));
+            return true;
+        }
+        UUID targetUuid = null;
+        if (!args[1].equalsIgnoreCase("all")) {
+            List<Player> targets = SelectorUtil.resolvePlayers(sender, args[1]);
+            if (targets.isEmpty()) {
+                sender.sendMessage(Component.text("No player matched rollback target.", NamedTextColor.RED));
+                return true;
+            }
+            targetUuid = targets.getFirst().getUniqueId();
+        }
+        long durationMillis = parseDuration(args[2]);
+        boolean teleport = false;
+        boolean restoreGameMode = false;
+        boolean restoreEffects = true;
+        for (int i = 3; i < args.length; i++) {
+            switch (args[i].toLowerCase(Locale.ROOT)) {
+                case "--tp" -> teleport = true;
+                case "--gamemode" -> restoreGameMode = true;
+                case "--no-effects" -> restoreEffects = false;
+                default -> { }
+            }
+        }
+        int restored = matchManager.rollback(targetUuid, durationMillis, teleport, restoreGameMode, restoreEffects);
+        sender.sendMessage(Component.text("Rolled back " + restored + " player(s).", NamedTextColor.GREEN));
         return true;
     }
 
@@ -404,7 +422,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("No finished report is available.", NamedTextColor.RED));
             return true;
         }
-        Path export = reportService.export(reportId, viewerAssets.render("LOCAL_EXPORT"));
+        Path export = reportService.export(reportId, viewerAssets.render("LOCAL_EXPORT", reportService.toJson(reportService.readSnapshot(reportId))));
         sender.sendMessage(Component.text("Exported report to " + export.getFileName(), NamedTextColor.GREEN));
         return true;
     }
@@ -429,7 +447,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     // -------------------------------------------------------------------------
 
     @Override
-    public @Nullable List<String> onTabComplete(
+    public @NotNull List<String> onTabComplete(
             @NotNull CommandSender sender,
             @NotNull Command command,
             @NotNull String alias,
@@ -446,7 +464,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                     "start", "stop", "prime", "prepare",
                     "runner", "hunter", "status", "surround",
                     "compass", "kit", "inventorycontrol", "ic",
-                    "aar", "portal"), partial);
+                    "aar", "rollback", "portal"), partial);
         }
 
         String sub = args[0].toLowerCase();
@@ -461,6 +479,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "kit"                     -> List.of("save", "select", "clear", "delete");
                 case "inventorycontrol", "ic"  -> List.of("none", "kit", "keep");
                 case "aar"                     -> List.of("list", "export");
+                case "rollback"                -> { List<String> rollbackTargets = new ArrayList<>(); rollbackTargets.add("all"); rollbackTargets.addAll(playerSuggestions(sender)); yield rollbackTargets; }
                 default                        -> List.of();
             };
             return filter(opts, partial);
@@ -481,9 +500,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 }
                 case "prepare" -> {
                     // Continue suggesting remaining prepare modes (exclude ones already typed).
-                    List<String> all = new ArrayList<>(List.of("health", "status", "xp", "inventory"));
-                    for (int i = 1; i < args.length - 1; i++) all.remove(args[i].toLowerCase());
-                    return filter(all, partial);
+                    return remainingPrepareModes(args, partial);
                 }
                 case "surround" -> {
                     // Suggest max-radius values larger than the typed min.
@@ -495,6 +512,9 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                         case "save"             -> List.of("<identifier>");
                         default                 -> List.of();
                     };
+                }
+                case "rollback" -> {
+                    return filter(List.of("5m", "30s", "1m", "10m"), partial);
                 }
                 case "aar" -> {
                     if (args[1].equalsIgnoreCase("export")) {
@@ -509,12 +529,26 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
 
         // prepare accepts up to 4 mode tokens — keep suggesting remaining ones.
         if (args.length >= 4 && sub.equals("prepare")) {
-            List<String> all = new ArrayList<>(List.of("health", "status", "xp", "inventory"));
-            for (int i = 1; i < args.length - 1; i++) all.remove(args[i].toLowerCase());
-            return filter(all, partial);
+            return remainingPrepareModes(args, partial);
+        }
+
+
+        if (args.length >= 4 && sub.equals("rollback")) {
+            if (args.length == 4) {
+                return filter(ROLLBACK_FLAGS, partial);
+            }
+            return filter(ROLLBACK_FLAGS, partial);
         }
 
         return List.of();
+    }
+
+    private List<String> remainingPrepareModes(String[] args, String partial) {
+        List<String> remaining = new ArrayList<>(PREPARE_MODE_SUGGESTIONS);
+        for (int i = 1; i < args.length - 1; i++) {
+            remaining.remove(args[i].toLowerCase(Locale.ROOT));
+        }
+        return filter(remaining, partial);
     }
 
     /** Returns the names of online players whose UUIDs are in the given set. */
@@ -537,7 +571,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
 
         EnumSet<PrepareMode> modes = EnumSet.noneOf(PrepareMode.class);
         for (int i = 1; i < args.length; i++) {
-            String token = args[i].toLowerCase(java.util.Locale.ROOT);
+            String token = args[i].toLowerCase(Locale.ROOT);
             switch (token) {
                 case "all" -> modes.addAll(EnumSet.allOf(PrepareMode.class));
                 case "health", "hunger", "food", "health-hunger", "health_and_hunger" -> modes.add(PrepareMode.HEALTH_AND_HUNGER);
@@ -549,6 +583,20 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             }
         }
         return modes;
+    }
+
+
+    private long parseDuration(String raw) {
+        String value = raw.trim().toLowerCase(Locale.ROOT);
+        if (value.endsWith("ms")) return parseDurationAmount(value, 2, 1L);
+        if (value.endsWith("s")) return parseDurationAmount(value, 1, 1000L);
+        if (value.endsWith("m")) return parseDurationAmount(value, 1, 60_000L);
+        if (value.endsWith("h")) return parseDurationAmount(value, 1, 3_600_000L);
+        return Long.parseLong(value);
+    }
+
+    private long parseDurationAmount(String value, int suffixLength, long multiplier) {
+        return Long.parseLong(value.substring(0, value.length() - suffixLength)) * multiplier;
     }
 
     private String describePrepareModes(EnumSet<PrepareMode> modes) {
