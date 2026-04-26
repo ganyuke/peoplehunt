@@ -35,6 +35,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Location;
@@ -51,14 +52,23 @@ public final class ReportService {
     private final Gson gson;
     private final Logger logger;
     private final Path indexFile;
+    private final int pathFlushMaxBufferedPoints;
+    private final long pathFlushMaxBufferedMillis;
     private final List<IndexEntry> indexEntries = new ArrayList<>();
+    private Consumer<String> runtimeWarningSink = ignored -> {};
     private CurrentSession currentSession;
 
-    public ReportService(Path reportsDirectory, Gson gson, Logger logger) {
+    public ReportService(Path reportsDirectory, Gson gson, Logger logger, int pathFlushMaxBufferedPoints, long pathFlushMaxBufferedMillis) {
         this.reportsDirectory = reportsDirectory;
         this.gson = gson;
         this.logger = Objects.requireNonNull(logger, "logger");
         this.indexFile = reportsDirectory.resolve("index.json");
+        this.pathFlushMaxBufferedPoints = Math.max(1, pathFlushMaxBufferedPoints);
+        this.pathFlushMaxBufferedMillis = Math.max(1000L, pathFlushMaxBufferedMillis);
+    }
+
+    public void setRuntimeWarningSink(Consumer<String> runtimeWarningSink) {
+        this.runtimeWarningSink = runtimeWarningSink == null ? ignored -> {} : runtimeWarningSink;
     }
 
     public void verifySqliteRuntime() throws IOException {
@@ -91,7 +101,7 @@ public final class ReportService {
         Files.createDirectories(reportsDirectory);
         if (Files.exists(indexFile)) {
             try (Reader reader = Files.newBufferedReader(indexFile)) {
-                List<IndexEntry> entries = gson.fromJson(reader, new TypeToken<List<IndexEntry>>() {}.getType());
+                List<IndexEntry> entries = gson.fromJson(reader, TypeToken.getParameterized(List.class, IndexEntry.class).getType());
                 if (entries != null) {
                     indexEntries.addAll(entries);
                 }
@@ -152,15 +162,37 @@ public final class ReportService {
     }
 
 
-    public synchronized UUID startSession(
+    public UUID startSession(
             UUID runnerUuid,
             String runnerName,
             KeepInventoryMode keepInventoryMode,
             String activeKitId,
             Collection<ParticipantSeed> participants
-    ) {
+    ) throws IOException {
         UUID reportId = UUID.randomUUID();
-        currentSession = new CurrentSession(reportId, System.currentTimeMillis(), runnerUuid, runnerName, keepInventoryMode, activeKitId);
+        Path reportDirectory = reportsDirectory.resolve(reportId.toString());
+        Path sqliteFile = reportDirectory.resolve("report.db");
+        try {
+            Files.createDirectories(reportDirectory);
+            initializeSqliteReport(sqliteFile);
+        } catch (IOException exception) {
+            try {
+                deleteRecursively(reportDirectory);
+            } catch (IOException cleanupException) {
+                exception.addSuppressed(cleanupException);
+            }
+            throw new IOException("Unable to initialize report database for match " + reportId, exception);
+        }
+
+        currentSession = new CurrentSession(
+                reportId,
+                System.currentTimeMillis(),
+                runnerUuid,
+                runnerName,
+                keepInventoryMode,
+                activeKitId,
+                sqliteFile
+        );
         logger.info("Started report session " + reportId + " for runner " + runnerName + ".");
         int index = 0;
         for (ParticipantSeed seed : participants) {
@@ -178,11 +210,62 @@ public final class ReportService {
         return reportId;
     }
 
-    public synchronized boolean isRunning() {
+    public Optional<ManualFlushResult> flushActiveReportPathsManually() throws IOException {
+        CurrentSession session = currentSession;
+        if (session == null) {
+            return Optional.empty();
+        }
+
+        int bufferedBefore = session.pendingPaths.size();
+        boolean wasSuspended = session.autoFlushSuspended;
+        boolean recreatedMissingDatabase = false;
+        boolean reportMayBeIncomplete = false;
+
+        try {
+            if (!Files.exists(session.sqliteFile)) {
+                initializeSqliteReport(session.sqliteFile);
+                session.lastInventoryByLife.clear();
+                session.lastPathFlushAtEpochMillis = System.currentTimeMillis();
+                recreatedMissingDatabase = true;
+                reportMayBeIncomplete = true;
+                warnRuntime(
+                        "PeopleHunt reporting warning: the active report database for " + session.reportId
+                                + " was missing during a manual flush attempt. A new staging database was created, so this report may be incomplete.",
+                        new IOException("Active report database was missing and had to be recreated")
+                );
+                if (bufferedBefore == 0) {
+                    session.autoFlushSuspended = false;
+                }
+            }
+
+            if (bufferedBefore > 0) {
+                flushPendingPaths(session, false);
+            }
+        } catch (IOException exception) {
+            session.autoFlushSuspended = true;
+            warnRuntime(
+                    "PeopleHunt reporting warning: a manual report flush failed for report " + session.reportId
+                            + ". Automatic path flushing remains suspended until storage is working again.",
+                    exception
+            );
+            throw exception;
+        }
+
+        return Optional.of(new ManualFlushResult(
+                session.reportId,
+                bufferedBefore - session.pendingPaths.size(),
+                session.pendingPaths.size(),
+                recreatedMissingDatabase,
+                reportMayBeIncomplete,
+                wasSuspended && !session.autoFlushSuspended
+        ));
+    }
+
+    public boolean isRunning() {
         return currentSession != null;
     }
 
-    public synchronized String colorOfParticipant(UUID uuid) {
+    public String colorOfParticipant(UUID uuid) {
         if (uuid == null || currentSession == null) {
             return null;
         }
@@ -237,11 +320,11 @@ public final class ReportService {
         return p;
     }
 
-    public synchronized UUID currentReportId() {
+    public UUID currentReportId() {
         return currentSession == null ? null : currentSession.reportId;
     }
 
-    public synchronized void updateSessionSettings(KeepInventoryMode keepInventoryMode, String activeKitId) {
+    public void updateSessionSettings(KeepInventoryMode keepInventoryMode, String activeKitId) {
         if (currentSession == null) {
             return;
         }
@@ -249,7 +332,7 @@ public final class ReportService {
         currentSession.activeKitId = activeKitId;
     }
 
-    public synchronized void registerParticipant(UUID uuid, String name, String role, boolean joinedLate, boolean spectatorOnly) {
+    public void registerParticipant(UUID uuid, String name, String role, boolean joinedLate, boolean spectatorOnly) {
         if (currentSession == null) {
             return;
         }
@@ -271,7 +354,7 @@ public final class ReportService {
         ));
     }
 
-    public synchronized void recordChat(String kind, UUID playerUuid, String playerName, Component component) {
+    public void recordChat(String kind, UUID playerUuid, String playerName, Component component) {
         if (currentSession == null) {
             return;
         }
@@ -280,18 +363,18 @@ public final class ReportService {
         currentSession.chat.add(new ChatRecord(offset(), kind, playerUuid, playerName, html, plain));
     }
 
-    public synchronized void recordChatRaw(String kind, UUID playerUuid, String playerName, String html, String plain) {
+    public void recordChatRaw(String kind, UUID playerUuid, String playerName, String html, String plain) {
         if (currentSession == null) {
             return;
         }
         currentSession.chat.add(new ChatRecord(offset(), kind, playerUuid, playerName, html, plain));
     }
 
-    public synchronized void recordMilestone(UUID playerUuid, String playerName, String key, String description) {
+    public void recordMilestone(UUID playerUuid, String playerName, String key, String description) {
         recordMilestone(playerUuid, playerName, key, description, null, null);
     }
 
-    public synchronized void recordMilestone(UUID playerUuid, String playerName, String key, String description, String rawName, String colorHex) {
+    public void recordMilestone(UUID playerUuid, String playerName, String key, String description, String rawName, String colorHex) {
         if (currentSession == null) {
             return;
         }
@@ -300,18 +383,18 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(offset(), playerUuid, playerName, "milestone", description, rawName, resolvedColor));
     }
 
-    public synchronized void recordTimeline(UUID playerUuid, String playerName, String kind, String description) {
+    public void recordTimeline(UUID playerUuid, String playerName, String kind, String description) {
         recordTimeline(playerUuid, playerName, kind, description, null, null);
     }
 
-    public synchronized void recordTimeline(UUID playerUuid, String playerName, String kind, String description, String rawName, String colorHex) {
+    public void recordTimeline(UUID playerUuid, String playerName, String kind, String description, String rawName, String colorHex) {
         if (currentSession == null) {
             return;
         }
         currentSession.timeline.add(new TimelineRecord(offset(), playerUuid, playerName, kind, description, rawName, defaultColor(playerUuid, colorHex)));
     }
 
-    public synchronized void recordFood(UUID playerUuid, String playerName, String rawName, String prettyName, String colorHex,
+    public void recordFood(UUID playerUuid, String playerName, String rawName, String prettyName, String colorHex,
                                         float health, float absorption, int food, float saturation) {
         if (currentSession == null) {
             return;
@@ -322,7 +405,7 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(now, playerUuid, playerName, "food", "ate " + prettyName, rawName, resolvedColor));
     }
 
-    public synchronized void recordEffect(UUID playerUuid, String playerName, String action, String rawName, String prettyName,
+    public void recordEffect(UUID playerUuid, String playerName, String action, String rawName, String prettyName,
                                           int amplifier, int durationTicks, String cause, String sourceName, String colorHex) {
         if (currentSession == null) {
             return;
@@ -337,7 +420,7 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(now, playerUuid, playerName, "effect", description, rawName, defaultColor(playerUuid, colorHex)));
     }
 
-    public synchronized void recordTotem(UUID playerUuid, String playerName, Location location, String colorHex) {
+    public void recordTotem(UUID playerUuid, String playerName, Location location, String colorHex) {
         if (currentSession == null) {
             return;
         }
@@ -347,7 +430,7 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(now, playerUuid, playerName, "totem", "Totem of Undying activated", "minecraft:totem_of_undying", resolvedColor));
     }
 
-    public synchronized void recordBlock(UUID playerUuid, String playerName, String attackerName, String rawName, double blockedDamage, Location location, String colorHex) {
+    public void recordBlock(UUID playerUuid, String playerName, String attackerName, String rawName, double blockedDamage, Location location, String colorHex) {
         if (currentSession == null) {
             return;
         }
@@ -357,7 +440,7 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(now, playerUuid, playerName, "shield", "blocked %.1f damage from %s".formatted(blockedDamage, attackerName), rawName, resolvedColor));
     }
 
-    public synchronized void recordMarker(String kind, UUID playerUuid, String playerName, Location location, String label, String description, String colorHex) {
+    public void recordMarker(String kind, UUID playerUuid, String playerName, Location location, String label, String description, String colorHex) {
         if (currentSession == null || location == null || location.getWorld() == null) {
             return;
         }
@@ -378,7 +461,7 @@ public final class ReportService {
         ));
     }
 
-    public synchronized void recordSpawnMarker(UUID playerUuid, String playerName, Location location, String label, String description, String colorHex) {
+    public void recordSpawnMarker(UUID playerUuid, String playerName, Location location, String label, String description, String colorHex) {
         if (currentSession == null || location == null || location.getWorld() == null) {
             return;
         }
@@ -452,7 +535,7 @@ public final class ReportService {
         return existing + ", " + ownerText;
     }
 
-    public synchronized void recordPath(
+    public void recordPath(
             UUID playerUuid,
             String playerName,
             int lifeIndex,
@@ -475,7 +558,8 @@ public final class ReportService {
         if (currentSession == null || location == null || location.getWorld() == null) {
             return;
         }
-        currentSession.paths.add(new PathPoint(
+        CurrentSession session = currentSession;
+        session.pendingPaths.add(new PathPoint(
                 offset(),
                 playerUuid,
                 playerName,
@@ -499,9 +583,10 @@ public final class ReportService {
                 inventory == null ? List.of() : List.copyOf(inventory),
                 effects == null ? List.of() : List.copyOf(effects)
         ));
+        maybeFlushPendingPaths(session);
     }
 
-    public synchronized void recordDamage(
+    public void recordDamage(
             UUID attackerUuid,
             String attackerName,
             UUID victimUuid,
@@ -516,7 +601,7 @@ public final class ReportService {
         recordDamage(attackerUuid, attackerUuid, attackerName, attackerUuid == null ? null : "PLAYER", victimUuid, victimName, cause, damage, weapon, projectileUuid, attackerLocation, victimLocation);
     }
 
-    public synchronized void recordDamage(
+    public void recordDamage(
             UUID attackerUuid,
             UUID attackerEntityUuid,
             String attackerName,
@@ -565,7 +650,7 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(offset(), attackerUuid, attackerName, "damage", "dealt %.2f to %s with %s".formatted(damage, victimName, weapon == null ? cause : weapon), cause, null));
     }
 
-    public synchronized void recordDeath(
+    public void recordDeath(
             UUID victimUuid,
             String victimName,
             UUID killerUuid,
@@ -580,7 +665,7 @@ public final class ReportService {
         recordDeath(victimUuid, victimName, killerUuid, killerName, killerUuid == null ? null : "PLAYER", cause, weapon, location, xpLevel, inventory, deathMessage);
     }
 
-    public synchronized void recordDeath(
+    public void recordDeath(
             UUID victimUuid,
             String victimName,
             UUID killerUuid,
@@ -624,11 +709,11 @@ public final class ReportService {
         currentSession.timeline.add(new TimelineRecord(offset(), victimUuid, victimName, "death", plain, cause, "#ff6b6b"));
     }
 
-    public synchronized void startProjectile(UUID projectileUuid, UUID shooterUuid, String shooterName, String type, Location start) {
+    public void startProjectile(UUID projectileUuid, UUID shooterUuid, String shooterName, String type, Location start) {
         startProjectile(projectileUuid, shooterUuid, shooterName, shooterUuid == null ? null : "PLAYER", type, "player", null, start);
     }
 
-    public synchronized void startProjectile(UUID projectileUuid, UUID shooterUuid, String shooterName, String shooterEntityType, String type, String kind, String colorHex, Location start) {
+    public void startProjectile(UUID projectileUuid, UUID shooterUuid, String shooterName, String shooterEntityType, String type, String kind, String colorHex, Location start) {
         if (currentSession == null || projectileUuid == null) {
             return;
         }
@@ -637,7 +722,7 @@ public final class ReportService {
         currentSession.projectiles.put(projectileUuid, tracked);
     }
 
-    public synchronized void recordProjectilePoint(UUID projectileUuid, Location location) {
+    public void recordProjectilePoint(UUID projectileUuid, Location location) {
         if (currentSession == null || projectileUuid == null || location == null) {
             return;
         }
@@ -647,7 +732,7 @@ public final class ReportService {
         }
     }
 
-    public synchronized void finishProjectile(UUID projectileUuid, Location location) {
+    public void finishProjectile(UUID projectileUuid, Location location) {
         if (currentSession == null || projectileUuid == null) {
             return;
         }
@@ -658,7 +743,7 @@ public final class ReportService {
         }
     }
 
-    public synchronized void startMobTrack(UUID entityUuid, String entityType, UUID targetPlayerUuid, String targetPlayerName, String colorHex, Location start) {
+    public void startMobTrack(UUID entityUuid, String entityType, UUID targetPlayerUuid, String targetPlayerName, String colorHex, Location start) {
         if (currentSession == null || entityUuid == null) {
             return;
         }
@@ -669,7 +754,7 @@ public final class ReportService {
         }).touch(targetPlayerUuid, targetPlayerName, start, offset());
     }
 
-    public synchronized void recordMobPoint(UUID entityUuid, UUID targetPlayerUuid, String targetPlayerName, Location location) {
+    public void recordMobPoint(UUID entityUuid, UUID targetPlayerUuid, String targetPlayerName, Location location) {
         if (currentSession == null || entityUuid == null) {
             return;
         }
@@ -679,7 +764,7 @@ public final class ReportService {
         }
     }
 
-    public synchronized void finishMobTrack(UUID entityUuid) {
+    public void finishMobTrack(UUID entityUuid) {
         if (currentSession == null || entityUuid == null) {
             return;
         }
@@ -689,21 +774,21 @@ public final class ReportService {
         }
     }
 
-    public synchronized void recordDragonSample(Location location, float health, float maxHealth) {
+    public void recordDragonSample(Location location, float health, float maxHealth) {
         if (currentSession == null || location == null || location.getWorld() == null) {
             return;
         }
         currentSession.dragon.add(new DragonSample(offset(), location.getWorld().getKey().asString(), location.getX(), location.getY(), location.getZ(), health, maxHealth));
     }
 
-    public synchronized void upsertEndCrystal(UUID crystalUuid, Location location) {
+    public void upsertEndCrystal(UUID crystalUuid, Location location) {
         if (currentSession == null || crystalUuid == null || location == null || location.getWorld() == null) {
             return;
         }
         currentSession.endCrystals.computeIfAbsent(crystalUuid, ignored -> new MutableCrystal(crystalUuid, location.getWorld().getKey().asString(), location.getX(), location.getY(), location.getZ(), offset()));
     }
 
-    public synchronized void markEndCrystalDestroyed(UUID crystalUuid) {
+    public void markEndCrystalDestroyed(UUID crystalUuid) {
         if (currentSession == null || crystalUuid == null) {
             return;
         }
@@ -713,7 +798,7 @@ public final class ReportService {
         }
     }
 
-    public synchronized Set<UUID> activeProjectiles() {
+    public Set<UUID> activeProjectiles() {
         if (currentSession == null) {
             return Set.of();
         }
@@ -725,8 +810,9 @@ public final class ReportService {
             return Optional.empty();
         }
         CurrentSession session = currentSession;
-        currentSession = null;
         long endedAt = System.currentTimeMillis();
+        session.autoFlushSuspended = false;
+        flushPendingPaths(session, true);
         ViewerSnapshot snapshot = new ViewerSnapshot(
                 new SessionMetadata(
                         session.reportId,
@@ -742,7 +828,7 @@ public final class ReportService {
                 session.stats.entrySet().stream().map(entry -> entry.getValue().toImmutable(entry.getKey())).toList(),
                 List.copyOf(session.damage),
                 List.copyOf(session.deaths),
-                List.copyOf(session.paths),
+                List.of(),
                 List.copyOf(session.milestones),
                 List.copyOf(session.chat),
                 session.projectiles.values().stream().map(TrackedProjectile::toRecord).toList(),
@@ -756,11 +842,9 @@ public final class ReportService {
                 List.copyOf(session.blocks),
                 List.copyOf(session.timeline)
         );
-        Path reportDir = reportsDirectory.resolve(session.reportId.toString());
-        Files.createDirectories(reportDir);
-        logger.info("Writing report to " + reportDir.resolve("report.db"));
-        writeSqlite(reportDir, snapshot);
-        logger.info("Finished writing report to " + reportDir.resolve("report.db"));
+        logger.info("Finalizing report in " + session.sqliteFile);
+        finalizeSqliteReport(session.sqliteFile, snapshot);
+        logger.info("Finished writing report to " + session.sqliteFile);
         IndexEntry indexEntry = new IndexEntry(
                 session.reportId,
                 session.startedAtEpochMillis,
@@ -773,7 +857,68 @@ public final class ReportService {
         indexEntries.add(indexEntry);
         indexEntries.sort(Comparator.comparingLong(IndexEntry::endedAtEpochMillis).reversed());
         saveIndex();
-        return Optional.of(new FinishResult(indexEntry, snapshot));
+        ViewerSnapshot finishedSnapshot = readFromSqlite(session.sqliteFile);
+        currentSession = null;
+        return Optional.of(new FinishResult(indexEntry, finishedSnapshot));
+    }
+
+    private void maybeFlushPendingPaths(CurrentSession session) {
+        if (session == null || session.pendingPaths.isEmpty() || session.autoFlushSuspended) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        boolean flushByCount = session.pendingPaths.size() >= pathFlushMaxBufferedPoints;
+        boolean flushByAge = (now - session.lastPathFlushAtEpochMillis) >= pathFlushMaxBufferedMillis;
+        if (!flushByCount && !flushByAge) {
+            return;
+        }
+        try {
+            flushPendingPaths(session, false);
+        } catch (IOException exception) {
+            session.autoFlushSuspended = true;
+            warnRuntime(
+                    "PeopleHunt reporting warning: live path flushing failed for report " + session.reportId
+                            + ". The match will continue, but report path data is now buffering in memory until finalization. See console.",
+                    exception
+            );
+        }
+    }
+
+    private void flushPendingPaths(CurrentSession session, boolean finalFlush) throws IOException {
+        if (session == null || session.pendingPaths.isEmpty()) {
+            return;
+        }
+        List<PathPoint> batch = List.copyOf(session.pendingPaths);
+        try (Connection connection = openSqliteConnection(session.sqliteFile)) {
+            connection.setAutoCommit(false);
+            try {
+                writePathBatch(connection, batch, session.lastInventoryByLife);
+                connection.commit();
+                session.pendingPaths.clear();
+                session.lastPathFlushAtEpochMillis = System.currentTimeMillis();
+                session.autoFlushSuspended = false;
+            } catch (Exception exception) {
+                rollbackQuietly(connection, exception);
+                String context = finalFlush ? "final report path flush" : "live report path flush";
+                throw new IOException("Unable to write " + context + " to sqlite", exception);
+            }
+        } catch (SQLException exception) {
+            String context = finalFlush ? "final report path flush" : "live report path flush";
+            throw new IOException("Unable to open sqlite connection for " + context, exception);
+        }
+    }
+
+    private void warnRuntime(String message, Exception exception) {
+        logger.severe(message + " (" + exception.getMessage() + ")");
+        runtimeWarningSink.accept(message);
+    }
+
+    private void rollbackQuietly(Connection connection, Exception primary) {
+        try {
+            connection.rollback();
+        } catch (SQLException rollbackException) {
+            primary.addSuppressed(rollbackException);
+        }
     }
 
     public synchronized List<IndexEntry> listReports() {
@@ -823,39 +968,115 @@ public final class ReportService {
         return currentSession == null ? 0L : System.currentTimeMillis() - currentSession.startedAtEpochMillis;
     }
 
-    private void writeSqlite(Path reportDir, ViewerSnapshot snapshot) throws IOException {
-        Path sqliteFile = reportDir.resolve("report.db");
+    private void initializeSqliteReport(Path sqliteFile) throws IOException {
+        try {
+            Files.deleteIfExists(sqliteFile);
+        } catch (IOException exception) {
+            throw new IOException("Unable to clear stale sqlite report file", exception);
+        }
         try (Connection connection = openSqliteConnection(sqliteFile)) {
             connection.setAutoCommit(false);
-            try (Statement statement = connection.createStatement()) {
-                statement.executeUpdate("CREATE TABLE session_metadata (report_id TEXT PRIMARY KEY, runner_uuid TEXT, runner_name TEXT, started_at INTEGER, ended_at INTEGER, outcome TEXT, keep_inventory_mode TEXT, active_kit_id TEXT)");
-                statement.executeUpdate("CREATE TABLE participants (uuid TEXT PRIMARY KEY, name TEXT, role TEXT, color_hex TEXT, joined_late INTEGER, spectator_only INTEGER)");
-                statement.executeUpdate("CREATE TABLE participant_stats (uuid TEXT PRIMARY KEY, deaths INTEGER, player_kills INTEGER, player_damage_dealt REAL, player_damage_taken REAL, non_player_damage_taken REAL)");
-                statement.executeUpdate("CREATE TABLE damage_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, attacker_uuid TEXT, attacker_entity_uuid TEXT, attacker_name TEXT, attacker_entity_type TEXT, victim_uuid TEXT, victim_name TEXT, cause TEXT, damage REAL, weapon TEXT, projectile_uuid TEXT, attacker_location_json TEXT, victim_location_json TEXT)");
-                statement.executeUpdate("CREATE TABLE damage_projectile_points (damage_idx INTEGER, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
-                statement.executeUpdate("CREATE TABLE deaths (idx INTEGER PRIMARY KEY, offset_ms INTEGER, victim_uuid TEXT, victim_name TEXT, killer_uuid TEXT, killer_name TEXT, killer_entity_type TEXT, cause TEXT, weapon TEXT, location_json TEXT, xp_level INTEGER, inventory_json TEXT, death_message_html TEXT, death_message_plain TEXT)");
-                statement.executeUpdate("CREATE TABLE path_points (path_id INTEGER PRIMARY KEY AUTOINCREMENT, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, life_index INTEGER, role TEXT, game_mode TEXT, is_teleport INTEGER, world TEXT, x REAL, y REAL, z REAL, health REAL, max_health REAL, absorption REAL, food INTEGER, saturation REAL, xp_level INTEGER, total_experience INTEGER, held_hotbar_slot INTEGER, experience_progress REAL, full_inventory_snapshot INTEGER)");
-                statement.executeUpdate("CREATE TABLE path_point_effects (path_id INTEGER, effect_idx INTEGER, raw_type TEXT, pretty_name TEXT, amplifier INTEGER, duration_ticks INTEGER, ambient INTEGER)");
-                statement.executeUpdate("CREATE TABLE path_point_inventory_deltas (path_id INTEGER, slot INTEGER, removed INTEGER, raw_id TEXT, pretty_name TEXT, amount INTEGER, enchanted INTEGER, text_color_hex TEXT, serialized_item TEXT, enchantments_json TEXT)");
-                statement.executeUpdate("CREATE TABLE milestones (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, key TEXT, description TEXT, raw_name TEXT, color_hex TEXT)");
-                statement.executeUpdate("CREATE TABLE chat (idx INTEGER PRIMARY KEY, offset_ms INTEGER, kind TEXT, player_uuid TEXT, player_name TEXT, html TEXT, plain_text TEXT)");
-                statement.executeUpdate("CREATE TABLE projectiles (projectile_uuid TEXT PRIMARY KEY, shooter_uuid TEXT, shooter_name TEXT, shooter_entity_type TEXT, type TEXT, kind TEXT, color_hex TEXT, launched_at_offset_ms INTEGER, ended_at_offset_ms INTEGER)");
-                statement.executeUpdate("CREATE TABLE projectile_points (projectile_uuid TEXT, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
-                statement.executeUpdate("CREATE TABLE mobs (entity_uuid TEXT PRIMARY KEY, entity_type TEXT, target_player_uuid TEXT, target_player_name TEXT, color_hex TEXT, started_at_offset_ms INTEGER, ended_at_offset_ms INTEGER)");
-                statement.executeUpdate("CREATE TABLE mob_points (entity_uuid TEXT, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
-                statement.executeUpdate("CREATE TABLE map_markers (marker_uuid TEXT PRIMARY KEY, offset_ms INTEGER, ended_at_offset_ms INTEGER, kind TEXT, player_uuid TEXT, player_name TEXT, world TEXT, x REAL, y REAL, z REAL, label TEXT, description TEXT, color_hex TEXT)");
-                statement.executeUpdate("CREATE TABLE dragon_samples (idx INTEGER PRIMARY KEY, offset_ms INTEGER, world TEXT, x REAL, y REAL, z REAL, health REAL, max_health REAL)");
-                statement.executeUpdate("CREATE TABLE end_crystals (crystal_uuid TEXT PRIMARY KEY, world TEXT, x REAL, y REAL, z REAL, spawned_at_offset_ms INTEGER, destroyed_at_offset_ms INTEGER)");
-                statement.executeUpdate("CREATE TABLE food_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, raw_name TEXT, pretty_name TEXT, color_hex TEXT, health REAL, absorption REAL, food INTEGER, saturation REAL)");
-                statement.executeUpdate("CREATE TABLE effect_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, action TEXT, raw_name TEXT, pretty_name TEXT, amplifier INTEGER, duration_ticks INTEGER, cause TEXT, source_name TEXT, color_hex TEXT)");
-                statement.executeUpdate("CREATE TABLE totem_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, location_json TEXT, color_hex TEXT)");
-                statement.executeUpdate("CREATE TABLE block_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, attacker_name TEXT, raw_name TEXT, blocked_damage REAL, location_json TEXT, color_hex TEXT)");
-                statement.executeUpdate("CREATE TABLE timeline (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, kind TEXT, description TEXT, raw_name TEXT, color_hex TEXT)");
+            try {
+                createSchema(connection);
+                connection.commit();
+            } catch (Exception exception) {
+                rollbackQuietly(connection, exception);
+                throw new IOException("Unable to initialize sqlite report schema", exception);
             }
-            writeSnapshotTables(connection, snapshot);
-            connection.commit();
-        } catch (Exception exception) {
-            throw new IOException("Unable to write sqlite report", exception);
+        } catch (SQLException exception) {
+            throw new IOException("Unable to create sqlite report", exception);
+        }
+    }
+
+    private void finalizeSqliteReport(Path sqliteFile, ViewerSnapshot snapshot) throws IOException {
+        try (Connection connection = openSqliteConnection(sqliteFile)) {
+            connection.setAutoCommit(false);
+            try {
+                createSchema(connection);
+                clearFinalizedSnapshotTables(connection);
+                writeSnapshotTables(connection, snapshot, false);
+                connection.commit();
+            } catch (Exception exception) {
+                rollbackQuietly(connection, exception);
+                throw new IOException("Unable to finalize sqlite report", exception);
+            }
+        } catch (SQLException exception) {
+            throw new IOException("Unable to open sqlite report for finalization", exception);
+        }
+    }
+
+    private void writeSqlite(Path reportDir, ViewerSnapshot snapshot) throws IOException {
+        Path sqliteFile = reportDir.resolve("report.db");
+        try {
+            Files.deleteIfExists(sqliteFile);
+        } catch (IOException exception) {
+            throw new IOException("Unable to clear previous sqlite report", exception);
+        }
+        try (Connection connection = openSqliteConnection(sqliteFile)) {
+            connection.setAutoCommit(false);
+            try {
+                createSchema(connection);
+                writeSnapshotTables(connection, snapshot, true);
+                connection.commit();
+            } catch (Exception exception) {
+                rollbackQuietly(connection, exception);
+                throw new IOException("Unable to write sqlite report", exception);
+            }
+        } catch (SQLException exception) {
+            throw new IOException("Unable to open sqlite report", exception);
+        }
+    }
+
+    private void createSchema(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS session_metadata (report_id TEXT PRIMARY KEY, runner_uuid TEXT, runner_name TEXT, started_at INTEGER, ended_at INTEGER, outcome TEXT, keep_inventory_mode TEXT, active_kit_id TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS participants (uuid TEXT PRIMARY KEY, name TEXT, role TEXT, color_hex TEXT, joined_late INTEGER, spectator_only INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS participant_stats (uuid TEXT PRIMARY KEY, deaths INTEGER, player_kills INTEGER, player_damage_dealt REAL, player_damage_taken REAL, non_player_damage_taken REAL)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS damage_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, attacker_uuid TEXT, attacker_entity_uuid TEXT, attacker_name TEXT, attacker_entity_type TEXT, victim_uuid TEXT, victim_name TEXT, cause TEXT, damage REAL, weapon TEXT, projectile_uuid TEXT, attacker_location_json TEXT, victim_location_json TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS damage_projectile_points (damage_idx INTEGER, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS deaths (idx INTEGER PRIMARY KEY, offset_ms INTEGER, victim_uuid TEXT, victim_name TEXT, killer_uuid TEXT, killer_name TEXT, killer_entity_type TEXT, cause TEXT, weapon TEXT, location_json TEXT, xp_level INTEGER, inventory_json TEXT, death_message_html TEXT, death_message_plain TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS path_points (path_id INTEGER PRIMARY KEY AUTOINCREMENT, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, life_index INTEGER, role TEXT, game_mode TEXT, is_teleport INTEGER, world TEXT, x REAL, y REAL, z REAL, health REAL, max_health REAL, absorption REAL, food INTEGER, saturation REAL, xp_level INTEGER, total_experience INTEGER, held_hotbar_slot INTEGER, experience_progress REAL, full_inventory_snapshot INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS path_point_effects (path_id INTEGER, effect_idx INTEGER, raw_type TEXT, pretty_name TEXT, amplifier INTEGER, duration_ticks INTEGER, ambient INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS path_point_inventory_deltas (path_id INTEGER, slot INTEGER, removed INTEGER, raw_id TEXT, pretty_name TEXT, amount INTEGER, enchanted INTEGER, text_color_hex TEXT, serialized_item TEXT, enchantments_json TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS milestones (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, key TEXT, description TEXT, raw_name TEXT, color_hex TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS chat (idx INTEGER PRIMARY KEY, offset_ms INTEGER, kind TEXT, player_uuid TEXT, player_name TEXT, html TEXT, plain_text TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS projectiles (projectile_uuid TEXT PRIMARY KEY, shooter_uuid TEXT, shooter_name TEXT, shooter_entity_type TEXT, type TEXT, kind TEXT, color_hex TEXT, launched_at_offset_ms INTEGER, ended_at_offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS projectile_points (projectile_uuid TEXT, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS mobs (entity_uuid TEXT PRIMARY KEY, entity_type TEXT, target_player_uuid TEXT, target_player_name TEXT, color_hex TEXT, started_at_offset_ms INTEGER, ended_at_offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS mob_points (entity_uuid TEXT, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS map_markers (marker_uuid TEXT PRIMARY KEY, offset_ms INTEGER, ended_at_offset_ms INTEGER, kind TEXT, player_uuid TEXT, player_name TEXT, world TEXT, x REAL, y REAL, z REAL, label TEXT, description TEXT, color_hex TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS dragon_samples (idx INTEGER PRIMARY KEY, offset_ms INTEGER, world TEXT, x REAL, y REAL, z REAL, health REAL, max_health REAL)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS end_crystals (crystal_uuid TEXT PRIMARY KEY, world TEXT, x REAL, y REAL, z REAL, spawned_at_offset_ms INTEGER, destroyed_at_offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS food_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, raw_name TEXT, pretty_name TEXT, color_hex TEXT, health REAL, absorption REAL, food INTEGER, saturation REAL)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS effect_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, action TEXT, raw_name TEXT, pretty_name TEXT, amplifier INTEGER, duration_ticks INTEGER, cause TEXT, source_name TEXT, color_hex TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS totem_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, location_json TEXT, color_hex TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS block_events (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, attacker_name TEXT, raw_name TEXT, blocked_damage REAL, location_json TEXT, color_hex TEXT)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS timeline (idx INTEGER PRIMARY KEY, offset_ms INTEGER, player_uuid TEXT, player_name TEXT, kind TEXT, description TEXT, raw_name TEXT, color_hex TEXT)");
+        }
+    }
+
+    private void clearFinalizedSnapshotTables(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DELETE FROM session_metadata");
+            statement.executeUpdate("DELETE FROM participants");
+            statement.executeUpdate("DELETE FROM participant_stats");
+            statement.executeUpdate("DELETE FROM damage_events");
+            statement.executeUpdate("DELETE FROM damage_projectile_points");
+            statement.executeUpdate("DELETE FROM deaths");
+            statement.executeUpdate("DELETE FROM milestones");
+            statement.executeUpdate("DELETE FROM chat");
+            statement.executeUpdate("DELETE FROM projectiles");
+            statement.executeUpdate("DELETE FROM projectile_points");
+            statement.executeUpdate("DELETE FROM mobs");
+            statement.executeUpdate("DELETE FROM mob_points");
+            statement.executeUpdate("DELETE FROM map_markers");
+            statement.executeUpdate("DELETE FROM dragon_samples");
+            statement.executeUpdate("DELETE FROM end_crystals");
+            statement.executeUpdate("DELETE FROM food_events");
+            statement.executeUpdate("DELETE FROM effect_events");
+            statement.executeUpdate("DELETE FROM totem_events");
+            statement.executeUpdate("DELETE FROM block_events");
+            statement.executeUpdate("DELETE FROM timeline");
         }
     }
 
@@ -883,7 +1104,7 @@ public final class ReportService {
         }
     }
 
-    private void writeSnapshotTables(Connection connection, ViewerSnapshot snapshot) throws Exception {
+    private void writeSnapshotTables(Connection connection, ViewerSnapshot snapshot, boolean includePaths) throws Exception {
         try (PreparedStatement ps = connection.prepareStatement("INSERT INTO session_metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
             SessionMetadata m = snapshot.metadata();
             ps.setString(1, m.reportId().toString());
@@ -973,7 +1194,9 @@ public final class ReportService {
             }
             ps.executeBatch();
         }
-        writePaths(connection, snapshot.paths());
+        if (includePaths) {
+            writePaths(connection, snapshot.paths());
+        }
         try (PreparedStatement ps = connection.prepareStatement("INSERT INTO milestones VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
             int idx = 0;
             for (MilestoneRecord record : snapshot.milestones()) {
@@ -1191,10 +1414,13 @@ public final class ReportService {
      * viewer data rich without exploding SQLite size for long matches.
      */
     private void writePaths(Connection connection, List<PathPoint> paths) throws Exception {
+        writePathBatch(connection, paths, new HashMap<>());
+    }
+
+    private void writePathBatch(Connection connection, List<PathPoint> paths, Map<String, Map<Integer, InventoryItem>> lastInventoryByLife) throws Exception {
         try (PreparedStatement ps = connection.prepareStatement("INSERT INTO path_points (offset_ms, player_uuid, player_name, life_index, role, game_mode, is_teleport, world, x, y, z, health, max_health, absorption, food, saturation, xp_level, total_experience, held_hotbar_slot, experience_progress, full_inventory_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS);
              PreparedStatement effects = connection.prepareStatement("INSERT INTO path_point_effects VALUES (?, ?, ?, ?, ?, ?, ?)");
              PreparedStatement inventory = connection.prepareStatement("INSERT INTO path_point_inventory_deltas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-            Map<String, Map<Integer, InventoryItem>> lastInventoryByLife = new HashMap<>();
             for (PathPoint point : paths) {
                 String lifeKey = point.playerUuid() + ":" + point.lifeIndex();
                 Map<Integer, InventoryItem> previous = lastInventoryByLife.get(lifeKey);
@@ -1614,7 +1840,7 @@ public final class ReportService {
             return List.of();
         }
         Set<String> deathColumns = tableColumns(connection, columnsByTable, "deaths");
-        java.lang.reflect.Type inventoryType = new com.google.gson.reflect.TypeToken<List<InventoryItem>>() {}.getType();
+        java.lang.reflect.Type inventoryType = TypeToken.getParameterized(List.class, InventoryItem.class).getType();
         List<DeathRecord> records = new ArrayList<>();
         try (Statement statement = connection.createStatement(); ResultSet rs = statement.executeQuery("SELECT * FROM deaths ORDER BY idx")) {
             while (rs.next()) {
@@ -1904,7 +2130,7 @@ public final class ReportService {
         if (json == null || json.isBlank()) {
             return List.of();
         }
-        List<ReportModels.InventoryEnchant> parsed = gson.fromJson(json, new TypeToken<List<ReportModels.InventoryEnchant>>() {}.getType());
+        List<ReportModels.InventoryEnchant> parsed = gson.fromJson(json, TypeToken.getParameterized(List.class, ReportModels.InventoryEnchant.class).getType());
         return parsed == null ? List.of() : List.copyOf(parsed);
     }
 
@@ -1940,6 +2166,15 @@ public final class ReportService {
 
     public record FinishResult(IndexEntry indexEntry, ViewerSnapshot snapshot) {}
 
+    public record ManualFlushResult(
+            UUID reportId,
+            int flushedPathPoints,
+            int remainingBufferedPathPoints,
+            boolean recreatedMissingDatabase,
+            boolean reportMayBeIncomplete,
+            boolean autoFlushResumed
+    ) {}
+
     private record InventoryDeltaRow(int slot, boolean removed, String rawId, String prettyName, int amount, boolean enchanted, String textColorHex, String serializedItem, List<ReportModels.InventoryEnchant> enchantments) {}
 
     private static final class CurrentSession {
@@ -1947,13 +2182,17 @@ public final class ReportService {
         private final long startedAtEpochMillis;
         private final UUID runnerUuid;
         private final String runnerName;
+        private final Path sqliteFile;
         private KeepInventoryMode keepInventoryMode;
         private String activeKitId;
         private final Map<UUID, Participant> participants = new LinkedHashMap<>();
         private final Map<UUID, MutableStats> stats = new LinkedHashMap<>();
         private final List<DamageRecord> damage = new ArrayList<>();
         private final List<DeathRecord> deaths = new ArrayList<>();
-        private final List<PathPoint> paths = new ArrayList<>();
+        private final List<PathPoint> pendingPaths = new ArrayList<>();
+        private final Map<String, Map<Integer, InventoryItem>> lastInventoryByLife = new HashMap<>();
+        private long lastPathFlushAtEpochMillis;
+        private boolean autoFlushSuspended;
         private final List<MilestoneRecord> milestones = new ArrayList<>();
         private final List<ChatRecord> chat = new ArrayList<>();
         private final Map<UUID, TrackedProjectile> projectiles = new LinkedHashMap<>();
@@ -1968,13 +2207,16 @@ public final class ReportService {
         private final List<BlockRecord> blocks = new ArrayList<>();
         private final List<TimelineRecord> timeline = new ArrayList<>();
 
-        private CurrentSession(UUID reportId, long startedAtEpochMillis, UUID runnerUuid, String runnerName, KeepInventoryMode keepInventoryMode, String activeKitId) {
+        private CurrentSession(UUID reportId, long startedAtEpochMillis, UUID runnerUuid, String runnerName, KeepInventoryMode keepInventoryMode, String activeKitId, Path sqliteFile) {
             this.reportId = reportId;
             this.startedAtEpochMillis = startedAtEpochMillis;
             this.runnerUuid = runnerUuid;
             this.runnerName = runnerName;
+            this.sqliteFile = sqliteFile;
             this.keepInventoryMode = keepInventoryMode;
             this.activeKitId = activeKitId;
+            this.lastPathFlushAtEpochMillis = startedAtEpochMillis;
+            this.autoFlushSuspended = false;
         }
     }
 

@@ -26,13 +26,23 @@ public final class PeopleHuntConfig {
     private final double endPortalRespawnRadius;
     private final boolean captureAdvancements;
     private final boolean webEnabled;
+    private final String webBindAddress;
     private final int webPort;
+    private final int reportingPathFlushMaxBufferedPoints;
+    private final long reportingPathFlushMaxBufferedSeconds;
     private final int rollbackMemoryMinutes;
+    private final long rollbackSampleIntervalTicks;
     private final double mobTrackRadius;
     private final double mobStaleRadius;
     private final long mobStaleMillis;
+    private final int lavaAttributionHorizontalRadius;
+    private final int lavaAttributionVerticalRadius;
+    private final long lavaAttributionWindowMillis;
+    private final double explosionAttributionRadius;
+    private final long explosionAttributionWindowMillis;
     private final boolean deathstreaksEnabled;
     private final DeathstreakAttributionMode deathstreakAttributionMode;
+    private final DeathstreakOccupiedArmorMode deathstreakOccupiedArmorMode;
     private final List<DeathstreakTier> deathstreakTiers;
     private final KeepInventoryMode endInventoryControlMode;
 
@@ -50,13 +60,23 @@ public final class PeopleHuntConfig {
             double endPortalRespawnRadius,
             boolean captureAdvancements,
             boolean webEnabled,
+            String webBindAddress,
             int webPort,
+            int reportingPathFlushMaxBufferedPoints,
+            long reportingPathFlushMaxBufferedSeconds,
             int rollbackMemoryMinutes,
+            long rollbackSampleIntervalTicks,
             double mobTrackRadius,
             double mobStaleRadius,
             long mobStaleMillis,
+            int lavaAttributionHorizontalRadius,
+            int lavaAttributionVerticalRadius,
+            long lavaAttributionWindowMillis,
+            double explosionAttributionRadius,
+            long explosionAttributionWindowMillis,
             boolean deathstreaksEnabled,
             DeathstreakAttributionMode deathstreakAttributionMode,
+            DeathstreakOccupiedArmorMode deathstreakOccupiedArmorMode,
             List<DeathstreakTier> deathstreakTiers,
             KeepInventoryMode endInventoryControlMode
     ) {
@@ -73,13 +93,23 @@ public final class PeopleHuntConfig {
         this.endPortalRespawnRadius = endPortalRespawnRadius;
         this.captureAdvancements = captureAdvancements;
         this.webEnabled = webEnabled;
+        this.webBindAddress = webBindAddress;
         this.webPort = webPort;
+        this.reportingPathFlushMaxBufferedPoints = reportingPathFlushMaxBufferedPoints;
+        this.reportingPathFlushMaxBufferedSeconds = reportingPathFlushMaxBufferedSeconds;
         this.rollbackMemoryMinutes = rollbackMemoryMinutes;
+        this.rollbackSampleIntervalTicks = rollbackSampleIntervalTicks;
         this.mobTrackRadius = mobTrackRadius;
         this.mobStaleRadius = mobStaleRadius;
         this.mobStaleMillis = mobStaleMillis;
+        this.lavaAttributionHorizontalRadius = lavaAttributionHorizontalRadius;
+        this.lavaAttributionVerticalRadius = lavaAttributionVerticalRadius;
+        this.lavaAttributionWindowMillis = lavaAttributionWindowMillis;
+        this.explosionAttributionRadius = explosionAttributionRadius;
+        this.explosionAttributionWindowMillis = explosionAttributionWindowMillis;
         this.deathstreaksEnabled = deathstreaksEnabled;
         this.deathstreakAttributionMode = deathstreakAttributionMode;
+        this.deathstreakOccupiedArmorMode = deathstreakOccupiedArmorMode;
         this.deathstreakTiers = List.copyOf(deathstreakTiers);
         this.endInventoryControlMode = endInventoryControlMode;
     }
@@ -88,20 +118,12 @@ public final class PeopleHuntConfig {
         List<DeathstreakTier> tiers = new ArrayList<>();
         List<?> tierRaw = config.getList("deathstreaks.tiers", Collections.emptyList());
         for (Object element : tierRaw) {
-            if (!(element instanceof ConfigurationSection section)) {
-                continue;
-            }
-            tiers.add(DeathstreakTier.from(section));
-        }
-        if (tiers.isEmpty()) {
-            ConfigurationSection deathstreaks = config.getConfigurationSection("deathstreaks");
-            if (deathstreaks != null) {
-                List<?> list = deathstreaks.getList("tiers", Collections.emptyList());
-                for (Object candidate : list) {
-                    if (candidate instanceof java.util.Map<?, ?> map) {
-                        tiers.add(DeathstreakTier.fromMap(map));
-                    }
-                }
+            if (element instanceof java.util.Map<?, ?> map) {
+                tiers.add(DeathstreakTier.fromMap(map));
+            } else if (element instanceof ConfigurationSection section) {
+                // Bukkit normally exposes list entries as maps for YAML block sequences, but this
+                // keeps the parser tolerant of alternate configuration providers.
+                tiers.add(DeathstreakTier.from(section));
             }
         }
         return new PeopleHuntConfig(
@@ -118,13 +140,23 @@ public final class PeopleHuntConfig {
                 config.getDouble("end-portal-respawn.overworld-radius", 64.0),
                 config.getBoolean("reporting.capture-advancements", true),
                 config.getBoolean("reporting.web.enabled", true),
+                config.getString("reporting.web.bind-address", "0.0.0.0"),
                 config.getInt("reporting.web.port", 18765),
+                config.getInt("reporting.path-flush.max-buffered-points", 500),
+                config.getLong("reporting.path-flush.max-buffered-seconds", 300L),
                 config.getInt("rollback.memory-minutes", 5),
+                config.getLong("rollback.sample-interval-ticks", 100L),
                 config.getDouble("reporting.mob-tracking.radius", 32.0),
                 config.getDouble("reporting.mob-tracking.stale-radius", 48.0),
                 config.getLong("reporting.mob-tracking.stale-millis", 60000L),
+                config.getInt("attribution.lava.horizontal-radius", 4),
+                config.getInt("attribution.lava.vertical-radius", 3),
+                config.getLong("attribution.lava.window-millis", 30000L),
+                config.getDouble("attribution.explosion.radius", 8.0),
+                config.getLong("attribution.explosion.window-millis", 5000L),
                 config.getBoolean("deathstreaks.enabled", true),
                 parseAttributionMode(config.getString("deathstreaks.attribution-mode", "UUID_STRICT")),
+                parseOccupiedArmorMode(config.getString("deathstreaks.occupied-armor-mode", "SKIP")),
                 tiers,
                 parseInventoryControlMode(config.getString("inventory-control.end-mode", "NONE"))
         );
@@ -135,6 +167,14 @@ public final class PeopleHuntConfig {
             return DeathstreakAttributionMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
         } catch (IllegalArgumentException e) {
             return DeathstreakAttributionMode.UUID_STRICT;
+        }
+    }
+
+    private static DeathstreakOccupiedArmorMode parseOccupiedArmorMode(String raw) {
+        try {
+            return DeathstreakOccupiedArmorMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return DeathstreakOccupiedArmorMode.SKIP;
         }
     }
 
@@ -200,12 +240,28 @@ public final class PeopleHuntConfig {
         return webEnabled;
     }
 
+    public String webBindAddress() {
+        return webBindAddress;
+    }
+
     public int webPort() {
         return webPort;
     }
 
+    public int reportingPathFlushMaxBufferedPoints() {
+        return reportingPathFlushMaxBufferedPoints;
+    }
+
+    public long reportingPathFlushMaxBufferedSeconds() {
+        return reportingPathFlushMaxBufferedSeconds;
+    }
+
     public int rollbackMemoryMinutes() {
         return rollbackMemoryMinutes;
+    }
+
+    public long rollbackSampleIntervalTicks() {
+        return rollbackSampleIntervalTicks;
     }
 
     public double mobTrackRadius() {
@@ -220,12 +276,36 @@ public final class PeopleHuntConfig {
         return mobStaleMillis;
     }
 
+    public int lavaAttributionHorizontalRadius() {
+        return lavaAttributionHorizontalRadius;
+    }
+
+    public int lavaAttributionVerticalRadius() {
+        return lavaAttributionVerticalRadius;
+    }
+
+    public long lavaAttributionWindowMillis() {
+        return lavaAttributionWindowMillis;
+    }
+
+    public double explosionAttributionRadius() {
+        return explosionAttributionRadius;
+    }
+
+    public long explosionAttributionWindowMillis() {
+        return explosionAttributionWindowMillis;
+    }
+
     public boolean deathstreaksEnabled() {
         return deathstreaksEnabled;
     }
 
     public DeathstreakAttributionMode deathstreakAttributionMode() {
         return deathstreakAttributionMode;
+    }
+
+    public DeathstreakOccupiedArmorMode deathstreakOccupiedArmorMode() {
+        return deathstreakOccupiedArmorMode;
     }
 
     public List<DeathstreakTier> deathstreakTiers() {
@@ -252,6 +332,11 @@ public final class PeopleHuntConfig {
         UUID_STRICT,
         MESSAGE_STRICT,
         EITHER
+    }
+
+    public enum DeathstreakOccupiedArmorMode {
+        SKIP,
+        GIVE_OR_DROP
     }
 
     public record DeathstreakTier(

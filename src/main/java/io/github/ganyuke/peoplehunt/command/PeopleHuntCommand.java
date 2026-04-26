@@ -7,6 +7,7 @@ import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager.PrepareMode;
 import io.github.ganyuke.peoplehunt.report.ReportModels.IndexEntry;
 import io.github.ganyuke.peoplehunt.report.ReportService;
+import io.github.ganyuke.peoplehunt.report.ReportService.ManualFlushResult;
 import io.github.ganyuke.peoplehunt.report.ViewerAssets;
 import io.github.ganyuke.peoplehunt.util.SelectorUtil;
 import io.github.ganyuke.peoplehunt.util.Text;
@@ -77,6 +78,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "compass"                             -> handleCompass(sender, args);
                 case "kit"                                 -> handleKit(sender, args);
                 case "inventorycontrol", "ic"              -> handleInventoryControl(sender, args);
+                case "deathstreak"                         -> handleDeathstreak(sender, args);
                 case "aar"                                 -> handleAar(sender, args);
                 case "rollback"                            -> handleRollback(sender, args);
                 default -> {
@@ -318,6 +320,38 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleDeathstreak(CommandSender sender, String[] args) {
+        if (args.length < 3 || !args[1].equalsIgnoreCase("reset")) {
+            sender.sendMessage(Component.text(
+                    "Usage: /peoplehunt deathstreak reset <all|player>",
+                    NamedTextColor.RED));
+            return true;
+        }
+
+        if (args[2].equalsIgnoreCase("all")) {
+            int reset = matchManager.resetDeathstreaks(null);
+            sender.sendMessage(Component.text(
+                    "Deathstreak reset complete — reset " + reset + " hunter(s).",
+                    NamedTextColor.GREEN));
+            return true;
+        }
+
+        List<Player> targets = SelectorUtil.resolvePlayers(sender, args[2]);
+        if (targets.isEmpty()) {
+            sender.sendMessage(Component.text("No player matched deathstreak reset target.", NamedTextColor.RED));
+            return true;
+        }
+
+        Player player = targets.getFirst();
+        int reset = matchManager.resetDeathstreaks(player.getUniqueId());
+        sender.sendMessage(Component.text(
+                reset > 0
+                        ? "Deathstreak reset for " + player.getName() + "."
+                        : player.getName() + " already had no counted deathstreak deaths.",
+                NamedTextColor.GREEN));
+        return true;
+    }
+
     private boolean handleInventoryControl(CommandSender sender, String[] args) {
         if (args.length < 2) {
             KeepInventoryMode current = matchManager.inventoryControlMode();
@@ -382,12 +416,13 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleAar(CommandSender sender, String[] args) throws IOException {
         if (args.length < 2) {
-            sender.sendMessage(Component.text("Usage: /peoplehunt aar <list|export>", NamedTextColor.RED));
+            sender.sendMessage(Component.text("Usage: /peoplehunt aar <list|export|flush>", NamedTextColor.RED));
             return true;
         }
         return switch (args[1].toLowerCase()) {
             case "list"   -> handleAarList(sender);
             case "export" -> handleAarExport(sender, args);
+            case "flush"  -> handleAarFlush(sender);
             default -> {
                 sender.sendMessage(Component.text("Unknown aar action.", NamedTextColor.RED));
                 yield true;
@@ -424,6 +459,34 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         }
         Path export = reportService.export(reportId, viewerAssets.render("LOCAL_EXPORT", reportService.toJson(reportService.readSnapshot(reportId))));
         sender.sendMessage(Component.text("Exported report to " + export.getFileName(), NamedTextColor.GREEN));
+        return true;
+    }
+
+    private boolean handleAarFlush(CommandSender sender) throws IOException {
+        ManualFlushResult result = reportService.flushActiveReportPathsManually().orElse(null);
+        if (result == null) {
+            sender.sendMessage(Component.text("No active report is running.", NamedTextColor.RED));
+            return true;
+        }
+
+        if (result.flushedPathPoints() == 0 && !result.recreatedMissingDatabase()) {
+            sender.sendMessage(Component.text(
+                    "Report flush skipped — no buffered path points were waiting to be written.",
+                    NamedTextColor.YELLOW));
+            return true;
+        }
+
+        StringBuilder message = new StringBuilder(
+                "Report flush complete — wrote " + result.flushedPathPoints()
+                        + " buffered path point(s); " + result.remainingBufferedPathPoints()
+                        + " remain buffered.");
+        if (result.recreatedMissingDatabase()) {
+            message.append(" Active report DB was missing, so a new staging DB was created; this report may be incomplete.");
+        }
+        if (result.autoFlushResumed()) {
+            message.append(" Automatic path flushing resumed.");
+        }
+        sender.sendMessage(Component.text(message.toString(), NamedTextColor.GREEN));
         return true;
     }
 
@@ -464,7 +527,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                     "start", "stop", "prime", "prepare",
                     "runner", "hunter", "status", "surround",
                     "compass", "kit", "inventorycontrol", "ic",
-                    "aar", "rollback", "portal"), partial);
+                    "deathstreak", "aar", "rollback", "portal"), partial);
         }
 
         String sub = args[0].toLowerCase();
@@ -478,7 +541,8 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "surround"                -> List.of("5", "10", "20");
                 case "kit"                     -> List.of("save", "select", "clear", "delete");
                 case "inventorycontrol", "ic"  -> List.of("none", "kit", "keep");
-                case "aar"                     -> List.of("list", "export");
+                case "deathstreak"             -> List.of("reset");
+                case "aar"                     -> List.of("list", "export", "flush");
                 case "rollback"                -> { List<String> rollbackTargets = new ArrayList<>(); rollbackTargets.add("all"); rollbackTargets.addAll(playerSuggestions(sender)); yield rollbackTargets; }
                 default                        -> List.of();
             };
@@ -516,6 +580,16 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "rollback" -> {
                     return filter(List.of("5m", "30s", "1m", "10m"), partial);
                 }
+                case "deathstreak" -> {
+                    if (args[1].equalsIgnoreCase("reset")) {
+                        List<String> targets = new ArrayList<>();
+                        targets.add("all");
+                        targets.addAll(onlinePlayerNames(matchManager.getSession() == null
+                                ? java.util.Collections.<UUID>emptyList()
+                                : matchManager.getSession().hunterIds));
+                        return filter(targets, partial);
+                    }
+                }
                 case "aar" -> {
                     if (args[1].equalsIgnoreCase("export")) {
                         List<String> ids = reportService.listReports().stream()
@@ -534,9 +608,6 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
 
 
         if (args.length >= 4 && sub.equals("rollback")) {
-            if (args.length == 4) {
-                return filter(ROLLBACK_FLAGS, partial);
-            }
             return filter(ROLLBACK_FLAGS, partial);
         }
 

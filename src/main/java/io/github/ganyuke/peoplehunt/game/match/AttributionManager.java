@@ -1,5 +1,6 @@
 package io.github.ganyuke.peoplehunt.game.match;
 
+import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import java.util.Iterator;
 import java.util.Map;
@@ -22,11 +23,24 @@ import org.bukkit.inventory.ItemStack;
 public final class AttributionManager {
     private final MatchManager matchManager;
     private final ReportService reportService;
+    private final int lavaAttributionHorizontalRadius;
+    private final int lavaAttributionVerticalRadius;
+    private final long lavaAttributionWindowMillis;
+    private final double explosionAttributionRadiusSquared;
+    private final long explosionAttributionWindowMillis;
     private int tickCounter = 0;
 
-    public AttributionManager(MatchManager matchManager, ReportService reportService) {
+    public AttributionManager(PeopleHuntConfig config, MatchManager matchManager, ReportService reportService) {
         this.matchManager = matchManager;
         this.reportService = reportService;
+        this.lavaAttributionHorizontalRadius = Math.max(0, config.lavaAttributionHorizontalRadius());
+        this.lavaAttributionVerticalRadius = Math.max(0, config.lavaAttributionVerticalRadius());
+        this.lavaAttributionWindowMillis = Math.max(0L, config.lavaAttributionWindowMillis());
+        double explosionRadius = Math.max(0.0, config.explosionAttributionRadius());
+        // Config is expressed in blocks for operators; square it once here so hot-path distance
+        // checks can keep using distanceSquared(...) without repeated conversion work.
+        this.explosionAttributionRadiusSquared = explosionRadius * explosionRadius;
+        this.explosionAttributionWindowMillis = Math.max(0L, config.explosionAttributionWindowMillis());
     }
 
     public void tick() {
@@ -171,22 +185,34 @@ public final class AttributionManager {
         MatchSession session = matchManager.getSession();
         if (session == null) return null;
         EntityDamageEvent last = player.getLastDamageCause();
-        if (last instanceof EntityDamageByEntityEvent byEntity) {
-            return resolveEntityAttribution(session, byEntity.getDamager());
+        if (last == null) {
+            return null;
         }
-        if (last instanceof EntityDamageByBlockEvent byBlock) {
-            return resolveBlockAttribution(session, byBlock.getDamager(), byBlock.getCause(), player.getLocation());
-        }
-        if (last != null && (last.getCause() == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION || last.getCause() == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION || last.getCause() == EntityDamageEvent.DamageCause.FIRE_TICK || last.getCause() == EntityDamageEvent.DamageCause.LAVA)) {
-            MatchSession.Attribution recent = session.recentVictimAttribution.get(player.getUniqueId());
-            if (recent != null) return recent;
-            if (isLavaLike(last.getCause())) {
-                MatchSession.Attribution lava = resolveLavaAttribution(session, player.getLocation());
-                if (lava != null) return lava;
+        return switch (last) {
+            case EntityDamageByEntityEvent byEntity -> resolveEntityAttribution(session, byEntity.getDamager());
+            case EntityDamageByBlockEvent byBlock ->
+                    resolveBlockAttribution(session, byBlock.getDamager(), byBlock.getCause(), player.getLocation());
+            default -> {
+                EntityDamageEvent.DamageCause cause = last.getCause();
+                if (cause == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION
+                        || cause == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION
+                        || cause == EntityDamageEvent.DamageCause.FIRE_TICK
+                        || cause == EntityDamageEvent.DamageCause.LAVA) {
+                    MatchSession.Attribution recent = session.recentVictimAttribution.get(player.getUniqueId());
+                    if (recent != null) {
+                        yield recent;
+                    }
+                    if (isLavaLike(cause)) {
+                        MatchSession.Attribution lava = resolveLavaAttribution(session, player.getLocation());
+                        if (lava != null) {
+                            yield lava;
+                        }
+                    }
+                    yield resolveExplosionAttribution(session, player.getLocation());
+                }
+                yield null;
             }
-            return resolveExplosionAttribution(session, player.getLocation());
-        }
-        return null;
+        };
     }
 
     private MatchSession.Attribution resolveEntityAttribution(MatchSession session, Entity damager) {
@@ -228,7 +254,7 @@ public final class AttributionManager {
 
     private MatchSession.Attribution resolveLavaAttribution(MatchSession session, Location location) {
         if (location == null || location.getWorld() == null) return null;
-        long cutoff = System.currentTimeMillis() - 30000L;
+        long cutoff = System.currentTimeMillis() - lavaAttributionWindowMillis;
         UUID worldUuid = location.getWorld().getUID();
         int bx = location.getBlockX();
         int by = location.getBlockY();
@@ -236,7 +262,9 @@ public final class AttributionManager {
         return session.lavaSources.entrySet().stream()
                 .filter(entry -> entry.getValue().createdAtEpochMillis() >= cutoff)
                 .filter(entry -> entry.getKey().worldUuid().equals(worldUuid))
-                .filter(entry -> Math.abs(entry.getKey().x() - bx) <= 4 && Math.abs(entry.getKey().y() - by) <= 3 && Math.abs(entry.getKey().z() - bz) <= 4)
+                .filter(entry -> Math.abs(entry.getKey().x() - bx) <= lavaAttributionHorizontalRadius
+                        && Math.abs(entry.getKey().y() - by) <= lavaAttributionVerticalRadius
+                        && Math.abs(entry.getKey().z() - bz) <= lavaAttributionHorizontalRadius)
                 .min(java.util.Comparator.comparingDouble(entry -> squared(entry.getKey(), bx, by, bz)))
                 .map(entry -> entry.getValue().withLocation(location))
                 .orElse(null);
@@ -250,13 +278,13 @@ public final class AttributionManager {
     }
 
     private MatchSession.Attribution resolveExplosionAttribution(MatchSession session, Location location) {
-        long cutoff = System.currentTimeMillis() - 5000L;
+        long cutoff = System.currentTimeMillis() - explosionAttributionWindowMillis;
         return session.recentExplosiveHazards.stream()
                 .filter(attribution -> attribution.createdAtEpochMillis() >= cutoff)
                 .filter(attribution -> attribution.location() != null && attribution.location().getWorld() != null)
                 .filter(attribution -> location != null && location.getWorld() != null)
                 .filter(attribution -> attribution.location().getWorld().getUID().equals(location.getWorld().getUID()))
-                .filter(attribution -> attribution.location().distanceSquared(location) <= 64.0)
+                .filter(attribution -> attribution.location().distanceSquared(location) <= explosionAttributionRadiusSquared)
                 .max(java.util.Comparator.comparingLong(MatchSession.Attribution::createdAtEpochMillis))
                 .orElse(null);
     }

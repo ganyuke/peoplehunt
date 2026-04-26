@@ -117,7 +117,7 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
         try {
             matchManager.startNow();
         } catch (IOException exception) {
-            throw new IllegalStateException("Unable to start match after prime", exception);
+            // startNow() already warned operators and left the match unstarted.
         }
     }
 

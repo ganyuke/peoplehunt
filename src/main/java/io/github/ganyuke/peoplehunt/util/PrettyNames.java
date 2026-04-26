@@ -5,7 +5,6 @@ import com.google.gson.reflect.TypeToken;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,7 +20,7 @@ import org.bukkit.potion.PotionEffectType;
 
 public final class PrettyNames {
     private static final Gson GSON = new Gson();
-    private static final Type STRING_MAP = new TypeToken<Map<String, String>>() {}.getType();
+    private static final java.lang.reflect.Type STRING_MAP = TypeToken.getParameterized(Map.class, String.class, String.class).getType();
     private static final Map<String, String> TRANSLATIONS = new HashMap<>();
     private static final Map<String, String> RAW_KEY_OVERRIDES = new HashMap<>();
     private static final Map<String, String> ENUM_OVERRIDES = new HashMap<>();

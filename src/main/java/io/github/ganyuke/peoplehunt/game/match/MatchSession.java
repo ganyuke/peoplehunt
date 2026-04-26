@@ -24,6 +24,10 @@ import org.bukkit.inventory.ItemStack;
  * a shutdown ends the session inconclusively instead.
  */
 public class MatchSession {
+    // Short-lived portal-arrival hints should not survive indefinitely if the matching world-change
+    // event never arrives (for example due to a cancelled or interrupted portal transfer).
+    public static final long PENDING_PORTAL_ARRIVAL_TTL_MILLIS = 30_000L;
+
     // --- Core Match Data ---
     public final UUID reportId;
     public final long startedAtEpochMillis;
@@ -83,10 +87,27 @@ public class MatchSession {
     public void cleanupOldHazards() {
         // Hazard and attribution caches are deliberately short-lived so delayed damage can still be
         // credited while stale world state does not leak across unrelated fights.
-        long cutoff = System.currentTimeMillis() - 30000L;
+        long cutoff = System.currentTimeMillis() - 30_000L;
         lavaSources.entrySet().removeIf(entry -> entry.getValue().createdAtEpochMillis() < cutoff);
         recentExplosiveHazards.removeIf(attribution -> attribution.createdAtEpochMillis() < cutoff);
         recentVictimAttribution.entrySet().removeIf(entry -> entry.getValue().createdAtEpochMillis() < cutoff);
+        pruneExpiredPendingPortalArrivals(System.currentTimeMillis());
+    }
+
+    public void pruneExpiredPendingPortalArrivals(long nowEpochMillis) {
+        pendingPortalArrivals.entrySet().removeIf(entry ->
+                nowEpochMillis - entry.getValue().recordedAtEpochMillis() > PENDING_PORTAL_ARRIVAL_TTL_MILLIS
+        );
+    }
+
+    public PendingPortalArrival consumeFreshPendingPortalArrival(UUID playerUuid, long nowEpochMillis) {
+        PendingPortalArrival pendingPortalArrival = pendingPortalArrivals.remove(playerUuid);
+        if (pendingPortalArrival == null) {
+            return null;
+        }
+        return nowEpochMillis - pendingPortalArrival.recordedAtEpochMillis() <= PENDING_PORTAL_ARRIVAL_TTL_MILLIS
+                ? pendingPortalArrival
+                : null;
     }
 
     public static class DeathstreakState {

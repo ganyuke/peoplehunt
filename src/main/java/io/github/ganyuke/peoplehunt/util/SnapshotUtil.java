@@ -41,10 +41,10 @@ public final class SnapshotUtil {
         Material material = stack.getType();
         String rawId = material.getKey().asString();
         String prettyName = itemPrettyName(stack);
-        Map<?, ?> rawEnchantments = stack.getEnchantments();
-        boolean enchanted = rawEnchantments != null && !rawEnchantments.isEmpty();
+        Map<org.bukkit.enchantments.Enchantment, Integer> enchantmentLevels = stack.getEnchantments();
+        boolean enchanted = !enchantmentLevels.isEmpty();
         String textColor = enchanted ? "#ff55ff" : materialTextColor(material);
-        List<InventoryEnchant> enchantments = stack.getEnchantments().entrySet().stream()
+        List<InventoryEnchant> enchantments = enchantmentLevels.entrySet().stream()
                 .map(entry -> new InventoryEnchant(
                         entry.getKey().getKey().asString(),
                         PrettyNames.key(entry.getKey().getKey().asString()),

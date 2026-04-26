@@ -26,9 +26,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.PluginManager;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
@@ -60,7 +60,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
             registerListeners();
             registerCommands();
             startServices();
-            reigsterTicking();
+            registerTicking();
         } catch (Exception exception) {
             throw new IllegalStateException("Failed to enable PeopleHunt", exception);
         }
@@ -99,7 +99,13 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         getLogger().info("Loading wherewas coordinates from " + persistence.whereWasStore.path());
         persistence.whereWasStore.load();
 
-        services.reportService = new ReportService(dataPath.resolve("reports"), gson, getLogger());
+        services.reportService = new ReportService(
+                dataPath.resolve("reports"),
+                gson,
+                getLogger(),
+                peopleHuntConfig.reportingPathFlushMaxBufferedPoints(),
+                peopleHuntConfig.reportingPathFlushMaxBufferedSeconds() * 1000L
+        );
         getLogger().info("Loading report index from " + dataPath.resolve("reports/index.json"));
         getLogger().info("Verifying SQLite driver and report storage startup probe...");
         services.reportService.verifySqliteRuntime();
@@ -131,11 +137,12 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         );
 
         services.tickService.setMatchManager(services.matchManager);
+        services.reportService.setRuntimeWarningSink(services.matchManager::warnOperators);
 
         services.movementService = new MatchMovementService(services.matchManager, peopleHuntConfig);
         services.compassService.setTargetProvider(services.movementService);
 
-        services.attributionManager = new AttributionManager(services.matchManager, services.reportService);
+        services.attributionManager = new AttributionManager(peopleHuntConfig, services.matchManager, services.reportService);
     }
 
     private void registerListeners() {
@@ -187,25 +194,26 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         register("wherewas", new WhereWasCommand(persistence.whereWasStore));
     }
 
-    private void reigsterTicking() {
+    private void registerTicking() {
         // Attribution state needs a per-tick heartbeat for projectile path sampling and short-lived
         // hazard cleanup.
-        Bukkit.getScheduler().scheduleSyncRepeatingTask(this, services.attributionManager::tick, 1L, 1L);
+        services.attributionTask = getServer().getScheduler().runTaskTimer(this, services.attributionManager::tick, 1L, 1L);
     }
 
     private void startServices() throws Exception {
         services.compassService.start();
 
         if (peopleHuntConfig.webEnabled()) {
-            getLogger().info("Starting embedded web server on port " + peopleHuntConfig.webPort());
+            getLogger().info("Starting embedded web server on " + peopleHuntConfig.webBindAddress() + ":" + peopleHuntConfig.webPort());
             services.webServer = new EmbeddedWebServer(
                     services.reportService,
                     services.viewerAssets,
                     gson,
+                    peopleHuntConfig.webBindAddress(),
                     peopleHuntConfig.webPort()
             );
             services.webServer.start();
-            getLogger().info("Embedded web server started on port " + peopleHuntConfig.webPort());
+            getLogger().info("Embedded web server started on " + peopleHuntConfig.webBindAddress() + ":" + peopleHuntConfig.webPort());
         } else {
             getLogger().info("Skipping embedded web server because it is disabled in config.");
         }
@@ -253,6 +261,10 @@ public final class PeopleHuntPlugin extends JavaPlugin {
     }
 
     private void stopServices() {
+        if (services.attributionTask != null) {
+            services.attributionTask.cancel();
+            services.attributionTask = null;
+        }
         if (services.compassService != null) {
             services.compassService.stop();
         }
@@ -292,5 +304,6 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         private MatchMovementService movementService;
         private EmbeddedWebServer webServer;
         private AttributionManager attributionManager;
+        private BukkitTask attributionTask;
     }
 }

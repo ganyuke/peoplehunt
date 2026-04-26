@@ -67,6 +67,7 @@ public final class MatchManager {
 
     private PrimeContext primeContext;
     private MatchSession activeSession;
+    private MatchOutcome pendingFinalizationOutcome;
 
     public MatchManager(
             JavaPlugin plugin, PeopleHuntConfig config, PersistentStateStore stateStore,
@@ -289,6 +290,9 @@ public final class MatchManager {
 
     public UUID startNow() throws IOException {
         if (activeSession != null) throw new IllegalStateException("A match is already active.");
+        if (pendingFinalizationOutcome != null || reportService.isRunning()) {
+            throw new IllegalStateException("The previous match report is still pending finalization. Fix report storage and run /peoplehunt stop again before starting a new match.");
+        }
         Player runner = requireOnlineRunner();
         // Starting always clears the primed state first so the live session becomes the single
         // source of truth for runtime logic.
@@ -324,10 +328,16 @@ public final class MatchManager {
             }
         }
 
-        UUID reportId = reportService.startSession(
-                runner.getUniqueId(), runner.getName(), stateData.inventoryControlMode,
-                stateData.activeKitId, participants
-        );
+        UUID reportId;
+        try {
+            reportId = reportService.startSession(
+                    runner.getUniqueId(), runner.getName(), stateData.inventoryControlMode,
+                    stateData.activeKitId, participants
+            );
+        } catch (IOException exception) {
+            warnOperators("PeopleHunt reporting error: failed to initialize the match report database. The match was not started. See console.");
+            throw exception;
+        }
 
         // Active session state is kept entirely in memory; only operator selections/settings are
         // persisted across restarts.
@@ -390,7 +400,7 @@ public final class MatchManager {
     public Optional<ReportService.FinishResult> stopInconclusive() throws IOException {
         if (activeSession == null) {
             cancelPrimeInternal();
-            return Optional.empty();
+            return pendingFinalizationOutcome == null ? Optional.empty() : finalizePendingReport();
         }
         return finishMatch(MatchOutcome.INCONCLUSIVE);
     }
@@ -411,10 +421,28 @@ public final class MatchManager {
     }
 
     private Optional<ReportService.FinishResult> finishMatch(MatchOutcome outcome) throws IOException {
+        if (activeSession == null) {
+            return Optional.empty();
+        }
         tickService.stopRuntimeTasks();
         activeSession = null;
+        pendingFinalizationOutcome = outcome;
 
+        try {
+            return finalizePendingReport();
+        } catch (IOException exception) {
+            warnOperators("PeopleHunt reporting error: match finalization failed. The match outcome was preserved, but the report could not be written. Fix report storage and run /peoplehunt stop again. See console.");
+            throw exception;
+        }
+    }
+
+    private Optional<ReportService.FinishResult> finalizePendingReport() throws IOException {
+        if (pendingFinalizationOutcome == null) {
+            return Optional.empty();
+        }
+        MatchOutcome outcome = pendingFinalizationOutcome;
         Optional<ReportService.FinishResult> result = reportService.finish(outcome);
+        pendingFinalizationOutcome = null;
         broadcast(Text.mm("<green>Manhunt ended."));
         result.ifPresent(finish -> {
             String summary = buildFinishedStatsMessage(finish.snapshot());
@@ -488,13 +516,22 @@ public final class MatchManager {
         Bukkit.getConsoleSender().sendMessage(component);
     }
 
+    public void warnOperators(String message) {
+        Component component = Text.mm("<red>" + message + "</red>");
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.isOp() || player.hasPermission("peoplehunt.admin")) {
+                player.sendMessage(component);
+            }
+        }
+        Bukkit.getConsoleSender().sendMessage(component);
+    }
+
     public String nameOf(UUID uuid) {
         if (uuid == null) return "unset";
         Player online = Bukkit.getPlayer(uuid);
         if (online != null) return online.getName();
-        return Bukkit.getOfflinePlayer(uuid).getName() == null
-                ? uuid.toString()
-                : Bukkit.getOfflinePlayer(uuid).getName();
+        var offline = Bukkit.getOfflinePlayer(uuid);
+        return offline.getName() == null ? uuid.toString() : offline.getName();
     }
 
     private void ensureNotActive() {
@@ -693,7 +730,7 @@ public final class MatchManager {
 
     private String messageBlock(String title, List<String> lines) {
         StringBuilder builder = new StringBuilder();
-        builder.append(String.format(HEADER_LINE, title)).append("\n");
+        builder.append(HEADER_LINE.formatted(Text.escapeTags(title))).append("\n");
 
         for (int i = 0; i < lines.size(); i++) {
             builder.append(lines.get(i));
@@ -707,11 +744,11 @@ public final class MatchManager {
     }
 
     private String statusLine(String label, String value) {
-        return String.format(LABEL_PREFIX, label) + value;
+        return LABEL_PREFIX.formatted(Text.escapeTags(label)) + value;
     }
 
     private String section(String title) {
-        return String.format(SECTION_PREFIX, title + ":");
+        return SECTION_PREFIX.formatted(Text.escapeTags(title + ":"));
     }
 
     private String displayOutcome(String outcome) {
@@ -724,7 +761,7 @@ public final class MatchManager {
     }
 
     private String white(String value) {
-        return String.format(VALUE, value);
+        return VALUE.formatted(Text.escapeTags(value));
     }
 
     private String coloredOutcome(String outcome) {
@@ -752,6 +789,41 @@ public final class MatchManager {
     public Optional<Location> consumeEndPortalPrompt(UUID uuid) {
         MatchSession session = this.getSession();
         return session == null ? Optional.empty() : Optional.ofNullable(session.pendingPortalPrompt.remove(uuid));
+    }
+
+
+    public int resetDeathstreaks(UUID targetUuid) {
+        if (activeSession == null) {
+            throw new IllegalStateException("No active match to reset deathstreaks for.");
+        }
+        if (targetUuid != null && !activeSession.hunterIds.contains(targetUuid)) {
+            throw new IllegalArgumentException("Target player is not an active hunter.");
+        }
+
+        int reset = 0;
+        for (UUID hunterUuid : new ArrayList<>(activeSession.hunterIds)) {
+            if (targetUuid != null && !targetUuid.equals(hunterUuid)) {
+                continue;
+            }
+            MatchSession.DeathstreakState state = activeSession.deathstreaks.get(hunterUuid);
+            if (state == null || state.streakDeaths == 0) {
+                continue;
+            }
+            state.streakDeaths = 0;
+            Player player = Bukkit.getPlayer(hunterUuid);
+            String playerName = player != null ? player.getName() : nameOf(hunterUuid);
+            reportService.recordTimeline(
+                    hunterUuid,
+                    playerName,
+                    "admin",
+                    "deathstreak reset by operator",
+                    "DEATHSTREAK_RESET",
+                    "#fbbf24"
+            );
+            reset++;
+        }
+
+        return reset;
     }
 
 

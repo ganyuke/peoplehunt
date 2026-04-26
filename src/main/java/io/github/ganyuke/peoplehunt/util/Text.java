@@ -7,6 +7,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
@@ -50,15 +51,10 @@ public final class Text {
     }
 
     public static Component lines(List<Component> lines) {
-        Component out = Component.empty();
-        boolean first = true;
-        for (Component line : lines) {
-            if (!first) {
-                out = out.append(Component.newline());
-            }
-            out = out.append(line);
-            first = false;
-        }
-        return out;
+        return Component.join(JoinConfiguration.newlines(), lines);
+    }
+
+    public static String escapeTags(String value) {
+        return value == null ? "" : MINI.escapeTags(value);
     }
 }

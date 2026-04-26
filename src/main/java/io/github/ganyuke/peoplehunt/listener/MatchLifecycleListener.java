@@ -1,6 +1,7 @@
 package io.github.ganyuke.peoplehunt.listener;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
+import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakOccupiedArmorMode;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakTier;
 import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
@@ -47,6 +48,12 @@ import org.bukkit.potion.PotionEffect;
  * policies, deathstreak progression, and the optional End portal return prompt.
  */
 public class MatchLifecycleListener implements Listener {
+    private enum ArmorGrantResult {
+        NOT_ARMOR,
+        PLACED,
+        SLOT_OCCUPIED
+    }
+
     private final JavaPlugin plugin;
     private final PeopleHuntConfig config;
     private final MatchManager matchManager;
@@ -284,10 +291,17 @@ public class MatchLifecycleListener implements Listener {
         for (var grant : tier.itemGrants()) {
             ItemStack stack = new ItemStack(grant.material(), grant.amount());
 
-            // Attempt to place armor into the correct slot first
-            if (tryPlaceArmor(inv, stack)) continue;
+            ArmorGrantResult armorResult = tryPlaceArmor(inv, stack);
+            if (armorResult == ArmorGrantResult.PLACED) {
+                continue;
+            }
+            if (armorResult == ArmorGrantResult.SLOT_OCCUPIED
+                    && config.deathstreakOccupiedArmorMode() == DeathstreakOccupiedArmorMode.SKIP) {
+                continue;
+            }
 
-            // For non-armor (tools, etc.) only give if none already present
+            // For non-armor grants, and for armor when occupied slots are configured to spill over,
+            // only add the missing amount so repeated tier applications stay idempotent.
             int existing = ItemUtil.countSimilar(inv, stack);
             if (existing >= grant.amount()) continue;
 
@@ -299,43 +313,41 @@ public class MatchLifecycleListener implements Listener {
     }
 
     /**
-     * If the given item is an armor piece and its corresponding armor slot is empty,
-     * places it there and returns {@code true}. Returns {@code false} for non-armor
-     * items or when the slot is already occupied.
+     * Attempts to equip a deathstreak armor grant into its dedicated slot.
+     *
+     * <p>The result is tri-state so the caller can distinguish between "equipped",
+     * "not armor", and "armor slot already occupied". That last case is configurable:
+     * servers can either skip the grant to avoid clutter or spill it into inventory.
      */
-    private boolean tryPlaceArmor(org.bukkit.inventory.PlayerInventory inv, ItemStack stack) {
+    private ArmorGrantResult tryPlaceArmor(org.bukkit.inventory.PlayerInventory inv, ItemStack stack) {
         org.bukkit.Material mat = stack.getType();
         String name = mat.name();
 
         if (name.endsWith("_HELMET") || name.equals("TURTLE_HELMET")) {
-            if (inv.getHelmet() == null || inv.getHelmet().getType().isAir()) {
-                inv.setHelmet(stack);
-                return true;
-            }
-            return true; // slot occupied — still consumed (don't double-give)
+            return placeArmor(inv.getHelmet(), inv::setHelmet, stack);
         }
         if (name.endsWith("_CHESTPLATE") || mat == org.bukkit.Material.ELYTRA) {
-            if (inv.getChestplate() == null || inv.getChestplate().getType().isAir()) {
-                inv.setChestplate(stack);
-                return true;
-            }
-            return true;
+            return placeArmor(inv.getChestplate(), inv::setChestplate, stack);
         }
         if (name.endsWith("_LEGGINGS")) {
-            if (inv.getLeggings() == null || inv.getLeggings().getType().isAir()) {
-                inv.setLeggings(stack);
-                return true;
-            }
-            return true;
+            return placeArmor(inv.getLeggings(), inv::setLeggings, stack);
         }
         if (name.endsWith("_BOOTS")) {
-            if (inv.getBoots() == null || inv.getBoots().getType().isAir()) {
-                inv.setBoots(stack);
-                return true;
-            }
-            return true;
+            return placeArmor(inv.getBoots(), inv::setBoots, stack);
         }
-        return false; // not an armor piece
+        return ArmorGrantResult.NOT_ARMOR;
+    }
+
+    private ArmorGrantResult placeArmor(
+            ItemStack existing,
+            java.util.function.Consumer<ItemStack> setter,
+            ItemStack stack
+    ) {
+        if (existing == null || existing.getType().isAir()) {
+            setter.accept(stack);
+            return ArmorGrantResult.PLACED;
+        }
+        return ArmorGrantResult.SLOT_OCCUPIED;
     }
 
     private DeathstreakTier activeDeathstreakTier(MatchSession session, UUID hunterUuid) {

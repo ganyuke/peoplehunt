@@ -12,9 +12,9 @@ import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.github.ganyuke.peoplehunt.util.PrettyNames;
 import io.github.ganyuke.peoplehunt.util.SnapshotUtil;
 import io.github.ganyuke.peoplehunt.util.Text;
+import io.papermc.paper.block.bed.BedEnterAction;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import io.papermc.paper.event.player.PlayerBedFailEnterEvent;
-import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -120,7 +120,7 @@ public final class GameplayListener implements Listener {
             if (targetUuid == null) return;
             target = Bukkit.getPlayer(targetUuid);
             if (target == null) return;
-            body = message.substring(message.indexOf(parts[1]));
+            body = parts.length >= 3 ? parts[1] + " " + parts[2] : parts[1];
         } else {
             return;
         }
@@ -376,7 +376,8 @@ public final class GameplayListener implements Listener {
         tickService.primeObservedState(player);
         reportService.recordMarker("dimension_entry", player.getUniqueId(), player.getName(), player.getLocation(), "Entered " + PrettyNames.key(player.getWorld().getKey().asString()), "Changed dimension", null);
 
-        MatchSession.PendingPortalArrival pendingPortalArrival = session.pendingPortalArrivals.remove(player.getUniqueId());
+        long nowEpochMillis = System.currentTimeMillis();
+        MatchSession.PendingPortalArrival pendingPortalArrival = session.consumeFreshPendingPortalArrival(player.getUniqueId(), nowEpochMillis);
         // World-change location is the first reliable post-transfer position. Record the portal
         // arrival marker and path sample there instead of trusting the raw teleport target.
         runNextTickIfOnline(player, () -> {
@@ -409,6 +410,7 @@ public final class GameplayListener implements Listener {
         if (session == null) return;
         boolean sameWorld = event.getFrom().getWorld().getUID().equals(event.getTo().getWorld().getUID());
         boolean portalTravel = event.getCause() == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL || event.getCause() == PlayerTeleportEvent.TeleportCause.END_PORTAL;
+        session.pruneExpiredPendingPortalArrivals(System.currentTimeMillis());
         if (portalTravel) {
             reportService.recordMarker("portal", player.getUniqueId(), player.getName(), event.getFrom(), "Portal", "Portal departure via " + PrettyNames.enumName(event.getCause().name()), null);
             session.pendingPortalArrivals.put(player.getUniqueId(), new MatchSession.PendingPortalArrival(event.getCause().name(), System.currentTimeMillis()));
@@ -525,7 +527,7 @@ public final class GameplayListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBedEnter(PlayerBedEnterEvent event) {
         if (!matchManager.hasActiveMatch() || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
-        Object enterAction = readBedEnterAction(event);
+        BedEnterAction enterAction = readBedEnterAction(event);
         String detail = describeBedAction(enterAction, null, false);
         reportService.recordTimeline(event.getPlayer().getUniqueId(), event.getPlayer().getName(), "spawn", "bed interaction: " + detail, rawBedProblem(enterAction), null);
     }
@@ -533,7 +535,7 @@ public final class GameplayListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
     public void onBedFailEnter(PlayerBedFailEnterEvent event) {
         if (!matchManager.hasActiveMatch() || !matchManager.isParticipant(event.getPlayer().getUniqueId())) return;
-        Object enterAction = readBedEnterAction(event);
+        BedEnterAction enterAction = readBedEnterAction(event);
         String detail = describeBedAction(enterAction, event.getMessage(), event.getWillExplode());
         reportService.recordTimeline(event.getPlayer().getUniqueId(), event.getPlayer().getName(), "spawn", "bed interaction: " + detail, rawBedProblem(enterAction), null);
     }
@@ -612,21 +614,15 @@ public final class GameplayListener implements Listener {
         }
     }
 
-    private Object readBedEnterAction(Object event) {
-        try {
-            Method method = event.getClass().getMethod("enterAction");
-            return method.invoke(event);
-        } catch (ReflectiveOperationException ignored) {
-            try {
-                Method method = event.getClass().getMethod("getBedEnterResult");
-                return method.invoke(event);
-            } catch (ReflectiveOperationException ignoredToo) {
-                return null;
-            }
-        }
+    private BedEnterAction readBedEnterAction(PlayerBedEnterEvent event) {
+        return event.enterAction();
     }
 
-    private String describeBedAction(Object enterAction, Component message, boolean willExplode) {
+    private BedEnterAction readBedEnterAction(PlayerBedFailEnterEvent event) {
+        return event.enterAction();
+    }
+
+    private String describeBedAction(BedEnterAction enterAction, Component message, boolean willExplode) {
         String explicitMessage = message == null ? "" : Text.plain(message).trim();
         if (!explicitMessage.isBlank()) {
             return explicitMessage;
@@ -645,39 +641,15 @@ public final class GameplayListener implements Listener {
         return canSleep(enterAction) ? "entered bed" : "bed interaction";
     }
 
-    private String rawBedProblem(Object enterAction) {
-        if (enterAction == null) {
+    private String rawBedProblem(BedEnterAction enterAction) {
+        if (enterAction == null || enterAction.problem() == null) {
             return null;
         }
-        if (enterAction instanceof Enum<?> legacyResult) {
-            return legacyResult.name();
-        }
-        try {
-            Method problemMethod = enterAction.getClass().getMethod("problem");
-            Object problem = problemMethod.invoke(enterAction);
-            if (problem == null) {
-                return null;
-            }
-            return problem.toString();
-        } catch (ReflectiveOperationException ignored) {
-            return null;
-        }
+        return enterAction.problem().toString();
     }
 
-    private boolean canSleep(Object enterAction) {
-        if (enterAction == null) {
-            return false;
-        }
-        if (enterAction instanceof Enum<?> legacyResult) {
-            return "OK".equalsIgnoreCase(legacyResult.name()) || "ALLOW".equalsIgnoreCase(legacyResult.name());
-        }
-        try {
-            Method canSleepMethod = enterAction.getClass().getMethod("canSleep");
-            Object result = canSleepMethod.invoke(enterAction);
-            return result != null && result.toString().toUpperCase(java.util.Locale.ROOT).contains("ALLOW");
-        } catch (ReflectiveOperationException ignored) {
-            return false;
-        }
+    private boolean canSleep(BedEnterAction enterAction) {
+        return enterAction != null && enterAction.problem() == null && enterAction.canSleep().success();
     }
 
     private void recordMilestoneIfAbsent(MatchSession session, UUID uuid, String name, String key, String description) {

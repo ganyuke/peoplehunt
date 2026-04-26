@@ -3,7 +3,6 @@ package io.github.ganyuke.peoplehunt.game.compass;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
 import io.github.ganyuke.peoplehunt.util.Text;
 import java.util.Collection;
-import java.util.Objects;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -15,6 +14,7 @@ import org.bukkit.inventory.meta.CompassMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 /**
  * Creates, identifies, distributes, and periodically retargets the plugin's custom hunter compass.
@@ -28,7 +28,7 @@ public final class CompassService {
     private final PeopleHuntConfig config;
     private final NamespacedKey compassKey;
     private CompassTargetProvider targetProvider;
-    private int taskId = -1;
+    private BukkitTask task;
 
     public CompassService(JavaPlugin plugin, PeopleHuntConfig config) {
         this.plugin = plugin;
@@ -42,13 +42,13 @@ public final class CompassService {
 
     public void start() {
         stop();
-        taskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this::updateAllCompasses, 1L, Math.max(1L, config.compassUpdateIntervalTicks()));
+        task = Bukkit.getScheduler().runTaskTimer(plugin, this::updateAllCompasses, 1L, Math.max(1L, config.compassUpdateIntervalTicks()));
     }
 
     public void stop() {
-        if (taskId != -1) {
-            Bukkit.getScheduler().cancelTask(taskId);
-            taskId = -1;
+        if (task != null) {
+            task.cancel();
+            task = null;
         }
     }
 
@@ -112,13 +112,16 @@ public final class CompassService {
 
     public void updatePlayerCompasses(Player player) {
         PlayerInventory inventory = player.getInventory();
-        for (int slot = 0; slot < inventory.getSize(); slot++) {
-            ItemStack item = inventory.getItem(slot);
-            if (isPluginCompass(item)) {
-                ItemStack updated = updateCompassItem(item, player);
-                if (updated != item) {
-                    inventory.setItem(slot, updated);
-                }
+        // Most inventory slots are not compasses, so iterate the known compass slots directly.
+        for (var entry : inventory.all(Material.COMPASS).entrySet()) {
+            int slot = entry.getKey();
+            ItemStack item = entry.getValue();
+            if (!isPluginCompass(item)) {
+                continue;
+            }
+            ItemStack updated = updateCompassItem(item, player);
+            if (updated != item) {
+                inventory.setItem(slot, updated);
             }
         }
         ItemStack offhand = inventory.getItemInOffHand();
@@ -144,11 +147,13 @@ public final class CompassService {
             }
         }
         // 2. Check if the target is in the exact same block as the current compass points to
-        else if (currentLodestone != null) {
-            if (Objects.equals(target.getWorld(), currentLodestone.getWorld()) &&
-                    target.getBlockX() == currentLodestone.getBlockX() &&
-                    target.getBlockY() == currentLodestone.getBlockY() &&
-                    target.getBlockZ() == currentLodestone.getBlockZ()) {
+        else if (currentLodestone != null
+                && target.getWorld() != null
+                && currentLodestone.getWorld() != null) {
+            if (target.getWorld().getUID().equals(currentLodestone.getWorld().getUID())
+                    && target.getBlockX() == currentLodestone.getBlockX()
+                    && target.getBlockY() == currentLodestone.getBlockY()
+                    && target.getBlockZ() == currentLodestone.getBlockZ()) {
                 return item; // No change needed, return original object
             }
         }

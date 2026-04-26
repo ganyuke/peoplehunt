@@ -25,6 +25,7 @@ import org.bukkit.entity.Mob;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.potion.PotionEffect;
 
 /**
@@ -36,10 +37,11 @@ public class MatchTickService {
     private final ReportService reportService;
     private MatchManager matchManager;
 
-    private int pathTaskId = -1;
-    private int elapsedTaskId = -1;
-    private int scanTaskId = -1;
-    private int primeTaskId = -1;
+    private BukkitTask pathTask;
+    private BukkitTask rollbackTask;
+    private BukkitTask elapsedTask;
+    private BukkitTask scanTask;
+    private BukkitTask primeTask;
 
     public MatchTickService(JavaPlugin plugin, PeopleHuntConfig config, ReportService reportService) {
         this.plugin = plugin;
@@ -53,9 +55,11 @@ public class MatchTickService {
 
     public void startRuntimeTasks() {
         stopRuntimeTasks();
-        pathTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this::recordPathSample, config.playerPathSampleIntervalTicks(), config.playerPathSampleIntervalTicks());
-        scanTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this::scanRuntimeState, 10L, 10L);
-        elapsedTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
+        recordRollbackSample();
+        pathTask = Bukkit.getScheduler().runTaskTimer(plugin, this::recordPathSample, config.playerPathSampleIntervalTicks(), config.playerPathSampleIntervalTicks());
+        rollbackTask = Bukkit.getScheduler().runTaskTimer(plugin, this::recordRollbackSample, Math.max(1L, config.rollbackSampleIntervalTicks()), Math.max(1L, config.rollbackSampleIntervalTicks()));
+        scanTask = Bukkit.getScheduler().runTaskTimer(plugin, this::scanRuntimeState, 10L, 10L);
+        elapsedTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             MatchSession session = matchManager.getSession();
             if (session == null) return;
             long elapsedMinutes = (System.currentTimeMillis() - session.startedAtEpochMillis) / 60000L;
@@ -67,17 +71,19 @@ public class MatchTickService {
     }
 
     public void stopRuntimeTasks() {
-        if (pathTaskId != -1) Bukkit.getScheduler().cancelTask(pathTaskId);
-        if (elapsedTaskId != -1) Bukkit.getScheduler().cancelTask(elapsedTaskId);
-        if (scanTaskId != -1) Bukkit.getScheduler().cancelTask(scanTaskId);
-        pathTaskId = -1;
-        elapsedTaskId = -1;
-        scanTaskId = -1;
+        cancelTask(pathTask);
+        cancelTask(rollbackTask);
+        cancelTask(elapsedTask);
+        cancelTask(scanTask);
+        pathTask = null;
+        rollbackTask = null;
+        elapsedTask = null;
+        scanTask = null;
     }
 
     public void startPrimeTask() {
         cancelPrimeTask();
-        primeTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
+        primeTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             PrimeContext ctx = matchManager.getPrimeContext();
             if (ctx == null || !ctx.keepPlayersFull()) return;
             for (UUID uuid : ctx.participantIds()) {
@@ -94,8 +100,14 @@ public class MatchTickService {
     }
 
     public void cancelPrimeTask() {
-        if (primeTaskId != -1) Bukkit.getScheduler().cancelTask(primeTaskId);
-        primeTaskId = -1;
+        cancelTask(primeTask);
+        primeTask = null;
+    }
+
+    private static void cancelTask(BukkitTask task) {
+        if (task != null) {
+            task.cancel();
+        }
     }
 
     public void captureImmediateSample(Player player) {
@@ -140,8 +152,21 @@ public class MatchTickService {
                 SnapshotUtil.inventory(player),
                 SnapshotUtil.effects(player)
         );
-        captureRollbackSnapshot(session, player, maxHealth);
         detectStateTransitions(session, player);
+    }
+
+    private void recordRollbackSample() {
+        MatchSession session = matchManager.getSession();
+        if (session == null) return;
+        // Rollback snapshots are a separate operator-facing feature from AAR path samples.
+        // Sampling them less frequently cuts inventory cloning cost without changing report fidelity.
+        for (UUID uuid : session.roles.keySet()) {
+            Player player = Bukkit.getPlayer(uuid);
+            if (player == null) continue;
+            var attribute = player.getAttribute(Attribute.MAX_HEALTH);
+            double maxHealth = attribute == null ? player.getHealth() : attribute.getValue();
+            captureRollbackSnapshot(session, player, maxHealth);
+        }
     }
 
     private void detectStateTransitions(MatchSession session, Player player) {

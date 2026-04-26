@@ -28,15 +28,41 @@ reporting:
   capture-advancements: true
   web:
     enabled: true
+    # Bind address for the embedded report viewer. This is the local interface to listen on:
+    # use 127.0.0.1 for local-only access, 0.0.0.0 for all interfaces, or a specific local IP.
+    bind-address: 0.0.0.0
     port: 18765
+  path-flush:
+    # Path points are still recorded at full AAR fidelity; this only controls when buffered
+    # points are flushed from memory into the staging report database during the match.
+    max-buffered-points: 500
+    max-buffered-seconds: 300
   mob-tracking:
     radius: 32.0
     stale-radius: 48.0
     stale-millis: 60000
+attribution:
+  lava:
+    # Search window for attributing lava-like deaths (lava, fire, hot floor) back to placed lava.
+    horizontal-radius: 4
+    vertical-radius: 3
+    window-millis: 30000
+  explosion:
+    # Search window for attributing explosion deaths back to recent explosive hazards.
+    # Radius is configured in blocks; the hot path compares squared distances internally.
+    radius: 8.0
+    window-millis: 5000
 rollback:
   memory-minutes: 5
+  # Rollback snapshots are separate from AAR/report path samples.
+  # Raising this reduces inventory-clone churn without changing report fidelity.
+  sample-interval-ticks: 100
 deathstreaks:
   enabled: true
+  # What to do when a deathstreak armor grant matches a slot the hunter already has filled.
+  # skip         — do not give the armor piece anywhere else; keeps inventories tidy
+  # give_or_drop — try to add the armor piece to inventory, or drop it if full
+  occupied-armor-mode: SKIP
   # How deaths are attributed to the runner for streak counting.
   # uuid_strict    — death attribution UUID must match runner UUID (default, most reliable)
   # message_strict — death message text must contain the runner's name

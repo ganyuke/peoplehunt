@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.ganyuke.peoplehunt.report.ReportModels.IndexEntry;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -16,11 +17,13 @@ public final class EmbeddedWebServer {
     private final ViewerAssets viewerAssets;
     private final Gson gson;
 
-    public EmbeddedWebServer(ReportService reportService, ViewerAssets viewerAssets, Gson gson, int port) throws IOException {
+    public EmbeddedWebServer(ReportService reportService, ViewerAssets viewerAssets, Gson gson, String bindAddress, int port) throws IOException {
         this.reportService = reportService;
         this.viewerAssets = viewerAssets;
         this.gson = gson;
-        this.server = HttpServer.create(new InetSocketAddress(port), 0);
+        // The bind address selects which local interface this embedded server listens on. Typical
+        // values are 127.0.0.1 (local only), 0.0.0.0 (all interfaces), or a specific local IP.
+        this.server = HttpServer.create(new InetSocketAddress(InetAddress.getByName(bindAddress), port), 0);
         createContexts();
     }
 
