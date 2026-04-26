@@ -108,7 +108,8 @@ public class MatchLifecycleListener implements Listener {
         Player player = event.getPlayer();
         Bukkit.getScheduler().runTask(plugin, () -> {
             MatchSession session = matchManager.getSession();
-            if (session == null || !matchManager.isParticipant(player.getUniqueId())) return;
+            if (session == null) return;
+            if (!matchManager.isParticipant(player.getUniqueId())) return;
 
             Role role = matchManager.roleOf(player.getUniqueId());
             if (role == Role.HUNTER) {

@@ -21,6 +21,10 @@ public final class WhereWasStore {
         this.gson = gson;
     }
 
+    public Path path() {
+        return file;
+    }
+
     public void load() throws IOException {
         values.clear();
         if (!Files.exists(file)) {

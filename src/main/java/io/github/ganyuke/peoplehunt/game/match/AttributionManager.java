@@ -141,11 +141,22 @@ public final class AttributionManager {
     }
 
     public MatchSession.Attribution resolveGenericDamage(Player victim) {
+        EntityDamageEvent last = victim.getLastDamageCause();
+        return resolveGenericDamage(victim, last == null ? null : last.getCause());
+    }
+
+    public MatchSession.Attribution resolveGenericDamage(Player victim, EntityDamageEvent.DamageCause cause) {
         MatchSession session = matchManager.getSession();
         if (session == null) return null;
         MatchSession.Attribution attribution = session.recentVictimAttribution.get(victim.getUniqueId());
+        if (attribution == null && isLavaLike(cause)) {
+            attribution = resolveLavaAttribution(session, victim.getLocation());
+        }
         if (attribution == null) {
             attribution = resolveExplosionAttribution(session, victim.getLocation());
+        }
+        if (attribution != null) {
+            session.recentVictimAttribution.put(victim.getUniqueId(), attribution);
         }
         return attribution;
     }
@@ -169,6 +180,10 @@ public final class AttributionManager {
         if (last != null && (last.getCause() == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION || last.getCause() == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION || last.getCause() == EntityDamageEvent.DamageCause.FIRE_TICK || last.getCause() == EntityDamageEvent.DamageCause.LAVA)) {
             MatchSession.Attribution recent = session.recentVictimAttribution.get(player.getUniqueId());
             if (recent != null) return recent;
+            if (isLavaLike(last.getCause())) {
+                MatchSession.Attribution lava = resolveLavaAttribution(session, player.getLocation());
+                if (lava != null) return lava;
+            }
             return resolveExplosionAttribution(session, player.getLocation());
         }
         return null;
@@ -201,6 +216,37 @@ public final class AttributionManager {
             return resolveExplosionAttribution(session, victimLocation);
         }
         return null;
+    }
+
+
+    private boolean isLavaLike(EntityDamageEvent.DamageCause cause) {
+        return cause == EntityDamageEvent.DamageCause.LAVA
+                || cause == EntityDamageEvent.DamageCause.FIRE_TICK
+                || cause == EntityDamageEvent.DamageCause.FIRE
+                || cause == EntityDamageEvent.DamageCause.HOT_FLOOR;
+    }
+
+    private MatchSession.Attribution resolveLavaAttribution(MatchSession session, Location location) {
+        if (location == null || location.getWorld() == null) return null;
+        long cutoff = System.currentTimeMillis() - 30000L;
+        UUID worldUuid = location.getWorld().getUID();
+        int bx = location.getBlockX();
+        int by = location.getBlockY();
+        int bz = location.getBlockZ();
+        return session.lavaSources.entrySet().stream()
+                .filter(entry -> entry.getValue().createdAtEpochMillis() >= cutoff)
+                .filter(entry -> entry.getKey().worldUuid().equals(worldUuid))
+                .filter(entry -> Math.abs(entry.getKey().x() - bx) <= 4 && Math.abs(entry.getKey().y() - by) <= 3 && Math.abs(entry.getKey().z() - bz) <= 4)
+                .min(java.util.Comparator.comparingDouble(entry -> squared(entry.getKey(), bx, by, bz)))
+                .map(entry -> entry.getValue().withLocation(location))
+                .orElse(null);
+    }
+
+    private double squared(MatchSession.BlockKey key, int x, int y, int z) {
+        double dx = key.x() - x;
+        double dy = key.y() - y;
+        double dz = key.z() - z;
+        return dx * dx + dy * dy + dz * dz;
     }
 
     private MatchSession.Attribution resolveExplosionAttribution(MatchSession session, Location location) {

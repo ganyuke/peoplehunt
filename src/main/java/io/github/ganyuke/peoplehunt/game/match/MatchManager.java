@@ -403,10 +403,11 @@ public final class MatchManager {
         return activeSession == null ? Optional.empty() : finishMatch(MatchOutcome.RUNNER_VICTORY);
     }
 
-    private void announceVictoryNextTick(String summary) {
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            broadcast(Text.mm(summary));
-        }, 1L);
+    private void announceFinishedSummaryOnce(String summary) {
+        Component component = Text.mm(summary);
+        // Send exactly once, after the current event has unwound, so the summary appears after
+        // vanilla death/victory chat without being tied to respawn or join timing.
+        Bukkit.getScheduler().runTask(plugin, () -> broadcast(component));
     }
 
     private Optional<ReportService.FinishResult> finishMatch(MatchOutcome outcome) throws IOException {
@@ -419,7 +420,7 @@ public final class MatchManager {
             String summary = buildFinishedStatsMessage(finish.snapshot());
             // The formatted summary is cached into persisted state so /peoplehunt status can show
             // the last finished match even after restart, as long as selections have not changed.
-            announceVictoryNextTick(summary);
+            announceFinishedSummaryOnce(summary);
             stateData.lastStatusSnapshot = new PersistentStateStore.LastStatusSnapshot(
                     finish.indexEntry().reportId(),
                     stateData.selectionGeneration,

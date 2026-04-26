@@ -135,6 +135,8 @@ public class MatchTickService {
                 player.getSaturation(),
                 player.getLevel(),
                 player.getTotalExperience(),
+                player.getInventory().getHeldItemSlot(),
+                player.getExp(),
                 SnapshotUtil.inventory(player),
                 SnapshotUtil.effects(player)
         );

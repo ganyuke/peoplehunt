@@ -35,6 +35,10 @@ public final class KitService {
         this.gson = gson;
     }
 
+    public Path path() {
+        return file;
+    }
+
     public void load() throws IOException {
         kits.clear();
         if (!Files.exists(file)) {

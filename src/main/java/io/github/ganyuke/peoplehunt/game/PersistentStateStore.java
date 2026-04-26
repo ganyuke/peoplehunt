@@ -27,6 +27,10 @@ public final class PersistentStateStore {
         this.gson = gson;
     }
 
+    public Path path() {
+        return file;
+    }
+
     public StateData load() throws IOException {
         if (!Files.exists(file)) {
             return new StateData();

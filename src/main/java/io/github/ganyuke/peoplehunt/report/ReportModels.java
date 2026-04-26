@@ -52,6 +52,12 @@ public final class ReportModels {
             long offsetMillis
     ) {}
 
+    public record InventoryEnchant(
+            String rawId,
+            String prettyName,
+            int level
+    ) {}
+
     public record InventoryItem(
             int slot,
             String rawId,
@@ -59,7 +65,8 @@ public final class ReportModels {
             int amount,
             boolean enchanted,
             String textColorHex,
-            String serializedItem
+            String serializedItem,
+            List<InventoryEnchant> enchantments
     ) {}
 
     public record EffectState(
@@ -168,6 +175,8 @@ public final class ReportModels {
             float saturation,
             int xpLevel,
             int totalExperience,
+            int selectedHotbarSlot,
+            float experienceProgress,
             List<InventoryItem> inventory,
             List<EffectState> effects
     ) {}

@@ -2,6 +2,7 @@ package io.github.ganyuke.peoplehunt.listener;
 
 import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
+import io.github.ganyuke.peoplehunt.game.Role;
 import io.github.ganyuke.peoplehunt.game.match.AttributionManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchSession;
@@ -22,6 +23,7 @@ import java.util.UUID;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.attribute.Attribute;
 import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.World;
@@ -161,12 +163,13 @@ public final class GameplayListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByEntity(EntityDamageByEntityEvent event) {
         MatchSession session = matchManager.getSession();
-        if (session == null || !(event.getEntity() instanceof Player victim)) return;
+        if (session == null || !(event.getEntity() instanceof Player victim) || !matchManager.isParticipant(victim.getUniqueId())) return;
 
         Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution != null) {
             recordAttributedDamage(attribution, victim, event.getCause().name(), event.getFinalDamage());
             maybeRecordBlockTimeline(victim, attribution.playerName(), event.getDamage(), event.getFinalDamage());
+            captureImmediateSampleNextTick(victim);
             recordMilestoneIfAbsent(session, attribution.playerUuid(), attribution.playerName(), "first_hit", "First hit");
             if (victim.getUniqueId().equals(session.runnerUuid) && !session.globalFirstBloodRecorded) {
                 session.globalFirstBloodRecorded = true;
@@ -200,16 +203,21 @@ public final class GameplayListener implements Listener {
                 victim.getLocation()
         );
         maybeRecordBlockTimeline(victim, attackerName, event.getDamage(), event.getFinalDamage());
+        captureImmediateSampleNextTick(victim);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByBlock(EntityDamageByBlockEvent event) {
         MatchSession session = matchManager.getSession();
-        if (session == null || !(event.getEntity() instanceof Player victim)) return;
+        if (session == null || !(event.getEntity() instanceof Player victim) || !matchManager.isParticipant(victim.getUniqueId())) return;
 
         Attribution attribution = attributionManager.resolveAndStore(event);
-        if (attribution == null) return;
-        recordAttributedDamage(attribution, victim, event.getCause().name(), event.getFinalDamage());
+        if (attribution != null) {
+            recordAttributedDamage(attribution, victim, event.getCause().name(), event.getFinalDamage());
+        } else {
+            recordEnvironmentalDamage(victim, event.getCause(), event.getFinalDamage(), blockDamageName(event));
+        }
+        captureImmediateSampleNextTick(victim);
     }
 
     private void maybeRecordBlockTimeline(Player victim, String attackerName, double baseDamage, double finalDamage) {
@@ -229,31 +237,61 @@ public final class GameplayListener implements Listener {
         );
     }
 
+    private void recordEnvironmentalDamage(Player victim, EntityDamageEvent.DamageCause cause, double finalDamage, String sourceName) {
+        String causeName = cause == null ? "UNKNOWN" : cause.name();
+        String resolvedSource = sourceName == null || sourceName.isBlank() ? PrettyNames.enumName(causeName) : sourceName;
+        reportService.recordDamage(
+                null,
+                null,
+                resolvedSource,
+                "ENVIRONMENT",
+                victim.getUniqueId(),
+                victim.getName(),
+                causeName,
+                finalDamage,
+                resolvedSource,
+                null,
+                victim.getLocation(),
+                victim.getLocation()
+        );
+    }
+
+    private String blockDamageName(EntityDamageByBlockEvent event) {
+        if (event.getDamager() != null) {
+            return PrettyNames.enumName(event.getDamager().getType().name());
+        }
+        return PrettyNames.enumName(event.getCause().name());
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onGenericDamage(EntityDamageEvent event) {
         if (event instanceof EntityDamageByEntityEvent || event instanceof EntityDamageByBlockEvent) return;
-        if (!(event.getEntity() instanceof Player victim)) return;
+        if (!(event.getEntity() instanceof Player victim) || !matchManager.hasActiveMatch() || !matchManager.isParticipant(victim.getUniqueId())) return;
 
-        Attribution attribution = attributionManager.resolveGenericDamage(victim);
-        if (attribution == null) return;
-
-        reportService.recordDamage(
-                attribution.playerUuid(),
-                attribution.playerName(),
-                victim.getUniqueId(),
-                victim.getName(),
-                event.getCause().name(),
-                event.getFinalDamage(),
-                attribution.weapon(),
-                attribution.projectileUuid(),
-                attribution.location(),
-                victim.getLocation()
-        );
+        Attribution attribution = attributionManager.resolveGenericDamage(victim, event.getCause());
+        if (attribution != null) {
+            reportService.recordDamage(
+                    attribution.playerUuid(),
+                    attribution.playerName(),
+                    victim.getUniqueId(),
+                    victim.getName(),
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    attribution.weapon(),
+                    attribution.projectileUuid(),
+                    attribution.location(),
+                    victim.getLocation()
+            );
+        } else {
+            recordEnvironmentalDamage(victim, event.getCause(), event.getFinalDamage(), null);
+        }
+        captureImmediateSampleNextTick(victim);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getPlayer();
+        if (!matchManager.hasActiveMatch() || !matchManager.isParticipant(player.getUniqueId())) return;
         Attribution attribution = attributionManager.consumeRecentVictimAttribution(player.getUniqueId());
         if (attribution == null) {
             attribution = attributionManager.resolveDeathAttribution(player);
@@ -264,8 +302,37 @@ public final class GameplayListener implements Listener {
             session.lastDeathAttribution.put(player.getUniqueId(), attribution);
         }
 
+        Role role = matchManager.roleOf(player.getUniqueId());
+        var maxHealthAttribute = player.getAttribute(Attribute.MAX_HEALTH);
+        float maxHealth = (float) (maxHealthAttribute == null ? Math.max(20.0, player.getHealth()) : maxHealthAttribute.getValue());
+        if (session != null && role != null) {
+            // Capture a terminal life sample so the replay shows the victim at 0.0 health until
+            // their next real path sample (for example, after respawn) instead of freezing on the
+            // last pre-death health value.
+            reportService.recordPath(
+                    player.getUniqueId(),
+                    player.getName(),
+                    session.lifeIndex.getOrDefault(player.getUniqueId(), 1),
+                    role.name(),
+                    player.getGameMode().name(),
+                    false,
+                    player.getLocation(),
+                    0.0f,
+                    maxHealth,
+                    0.0f,
+                    player.getFoodLevel(),
+                    player.getSaturation(),
+                    player.getLevel(),
+                    player.getTotalExperience(),
+                    player.getInventory().getHeldItemSlot(),
+                    player.getExp(),
+                    SnapshotUtil.inventory(player),
+                    SnapshotUtil.effects(player)
+            );
+        }
+
         String cause = player.getLastDamageCause() == null ? "UNKNOWN" : player.getLastDamageCause().getCause().name();
-        String killerEntityType = attribution == null ? lastDamagerType(player) : (attribution.playerUuid() == null ? attribution.weapon() : "PLAYER");
+        String killerEntityType = attribution == null ? (lastDamagerType(player) == null ? "ENVIRONMENT" : lastDamagerType(player)) : (attribution.playerUuid() == null ? attribution.weapon() : "PLAYER");
         reportService.recordDeath(
                 player.getUniqueId(),
                 player.getName(),

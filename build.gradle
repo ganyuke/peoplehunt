@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'io.github.ganyuke'
-version = '0.1.0'
+version = '0.2.0'
 
 def minecraftGameVersion = (findProperty('minecraftGameVersion') ?: '1.21.11').toString()
 def preactVersion = (findProperty('preactVersion') ?: '10.26.4').toString()
@@ -19,6 +19,7 @@ def generatedLangDir = layout.buildDirectory.dir('generated/resources/main/lang'
 def generatedWebDir = layout.buildDirectory.dir('generated/resources/main/web')
 def cachedLangFile = layout.projectDirectory.file(".gradle/peoplehunt/cache/lang/${minecraftGameVersion}/en_us.json")
 def cachedClientJar = layout.projectDirectory.file(".gradle/peoplehunt/cache/lang/${minecraftGameVersion}/client.jar")
+def generatedMinecraftIconsFile = generatedWebDir.map { it.file('minecraft-icons.json') }
 def frontendCacheRoot = layout.projectDirectory.dir('.gradle/peoplehunt/cache/frontend')
 
 def fetchJson = { String url ->
@@ -79,16 +80,18 @@ tasks {
 // <-- Configures the Shadow plugin to replace the standard JAR with the bundled one
 shadowJar {
     archiveClassifier.set('')
+    mergeServiceFiles()
 }
 
 tasks.register('syncOfficialMinecraftEnglish') {
     description = 'Downloads the official Mojang en_us.json for the configured Minecraft version and stages it into generated resources.'
     outputs.file(generatedLangDir.map { it.file('en_us.json') })
+    outputs.file(generatedMinecraftIconsFile)
     doLast {
         File cacheFile = cachedLangFile.asFile
         File clientJarFile = cachedClientJar.asFile
         boolean refresh = project.hasProperty('refreshMinecraftEnglish')
-        if (refresh || !cacheFile.exists()) {
+        if (refresh || !cacheFile.exists() || !clientJarFile.exists()) {
             logger.lifecycle('Resolving official Minecraft language assets for {}', minecraftGameVersion)
             def manifest = fetchJson(mojangVersionManifestUrl)
             def versionEntry = manifest.versions.find { it.id == minecraftGameVersion }
@@ -125,6 +128,47 @@ tasks.register('syncOfficialMinecraftEnglish') {
         generatedDir.mkdirs()
         File generatedFile = new File(generatedDir, 'en_us.json')
         generatedFile.text = readUtf8(cacheFile)
+
+        File iconFile = generatedMinecraftIconsFile.get().asFile
+        iconFile.parentFile.mkdirs()
+        def icons = [:]
+        def zip = new java.util.zip.ZipFile(clientJarFile)
+        try {
+            zip.entries().each { entry ->
+                if (entry.directory || !entry.name.endsWith('.png')) return
+                String name = entry.name
+                boolean supported = name.startsWith('assets/minecraft/textures/item/') ||
+                        name.startsWith('assets/minecraft/textures/block/') ||
+                        name.startsWith('assets/minecraft/textures/mob_effect/') ||
+                        (name.startsWith('assets/minecraft/textures/gui/sprites/') && (name.contains('heart') || name.contains('food') || name.contains('hunger')))
+                if (!supported) return
+                byte[] bytes = zip.getInputStream(entry).withCloseable { it.bytes }
+                String base64 = bytes.encodeBase64().toString()
+                String logical = name
+                        .replace('assets/minecraft/textures/', '')
+                        .replace('.png', '')
+                String dataUri = 'data:image/png;base64,' + base64
+                icons['minecraft:' + logical] = dataUri
+                if (logical.startsWith('item/')) {
+                    icons['minecraft:' + logical.substring('item/'.length())] = dataUri
+                } else if (logical.startsWith('block/')) {
+                    icons['minecraft:block/' + logical.substring('block/'.length())] = dataUri
+                    icons.putIfAbsent('minecraft:' + logical.substring('block/'.length()), dataUri)
+                } else if (logical.startsWith('mob_effect/')) {
+                    icons['minecraft:mob_effect/' + logical.substring('mob_effect/'.length())] = dataUri
+                } else if (logical.startsWith('gui/sprites/')) {
+                    String spriteLogical = logical.substring('gui/sprites/'.length())
+                    icons['minecraft:ui/' + spriteLogical] = dataUri
+                    String fileName = spriteLogical.tokenize('/').last()
+                    if (fileName) {
+                        icons['minecraft:ui/' + fileName] = dataUri
+                    }
+                }
+            }
+        } finally {
+            zip.close()
+        }
+        iconFile.text = groovy.json.JsonOutput.toJson(icons)
     }
 }
 
@@ -170,6 +214,7 @@ tasks.register('syncViewerFrontendAssets') {
 tasks.register('buildInlineViewer') {
     description = 'Builds the self-contained Preact report viewer HTML with vendored frontend assets inlined.'
     dependsOn(tasks.named('syncViewerFrontendAssets'))
+    dependsOn(tasks.named('syncOfficialMinecraftEnglish'))
     outputs.file(generatedWebDir.map { it.file('viewer.inline.html') })
     doLast {
         File webSourceDir = file('src/main/resources/web')
@@ -190,6 +235,7 @@ tasks.register('buildInlineViewer') {
         String html = readUtf8(templateFile)
                 .replace('__INLINE_CSS__', readUtf8(cssFile))
                 .replace('__INLINE_VENDOR_JS__', vendorBundle)
+                .replace('__INLINE_ICON_JSON__', readUtf8(generatedMinecraftIconsFile.get().asFile))
                 .replace('__INLINE_APP_JS__', readUtf8(appFile))
 
         File output = new File(generatedWebDir.get().asFile, 'viewer.inline.html')
@@ -234,6 +280,7 @@ processResources {
     from(generatedResourcesRoot) {
         include 'lang/en_us.json'
         include 'web/viewer.inline.html'
+        include 'web/minecraft-icons.json'
         include 'web/THIRD_PARTY_LICENSES.txt'
     }
 

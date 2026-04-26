@@ -78,6 +78,9 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         Files.createDirectories(dataPath);
         Files.createDirectories(dataPath.resolve("reports"));
         Files.createDirectories(dataPath.resolve("state"));
+        getLogger().info("PeopleHunt data directory ready at " + dataPath);
+        getLogger().info("Report directory ready at " + dataPath.resolve("reports"));
+        getLogger().info("State directory ready at " + dataPath.resolve("state"));
         return dataPath;
     }
 
@@ -85,15 +88,21 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         // Long-lived state is stored separately from per-report output so operator-facing settings
         // survive restarts while after-action reports remain append-only.
         persistence.stateStore = new PersistentStateStore(dataPath.resolve("state/state.json"), gson);
+        getLogger().info("Loading plugin state from " + persistence.stateStore.path());
         persistence.stateData = persistence.stateStore.load();
 
         services.kitService = new KitService(dataPath.resolve("state/kits.json"), gson);
+        getLogger().info("Loading saved kits from " + services.kitService.path());
         services.kitService.load();
 
         persistence.whereWasStore = new WhereWasStore(dataPath.resolve("state/wherewas.json"), gson);
+        getLogger().info("Loading wherewas coordinates from " + persistence.whereWasStore.path());
         persistence.whereWasStore.load();
 
-        services.reportService = new ReportService(dataPath.resolve("reports"), gson);
+        services.reportService = new ReportService(dataPath.resolve("reports"), gson, getLogger());
+        getLogger().info("Loading report index from " + dataPath.resolve("reports/index.json"));
+        getLogger().info("Verifying SQLite driver and report storage startup probe...");
+        services.reportService.verifySqliteRuntime();
         services.reportService.loadIndex();
 
         services.viewerAssets = new ViewerAssets(this);
@@ -188,6 +197,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         services.compassService.start();
 
         if (peopleHuntConfig.webEnabled()) {
+            getLogger().info("Starting embedded web server on port " + peopleHuntConfig.webPort());
             services.webServer = new EmbeddedWebServer(
                     services.reportService,
                     services.viewerAssets,
@@ -195,6 +205,9 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                     peopleHuntConfig.webPort()
             );
             services.webServer.start();
+            getLogger().info("Embedded web server started on port " + peopleHuntConfig.webPort());
+        } else {
+            getLogger().info("Skipping embedded web server because it is disabled in config.");
         }
     }
 
@@ -215,15 +228,19 @@ public final class PeopleHuntPlugin extends JavaPlugin {
             // Persist mutable operator state after the match is stopped so saved snapshots reflect
             // the final session outcome.
             if (persistence.stateStore != null && persistence.stateData != null) {
+                getLogger().info("Writing plugin state to disk at " + persistence.stateStore.path());
                 persistence.stateStore.save(persistence.stateData);
             }
             if (services.kitService != null) {
+                getLogger().info("Writing saved kits to disk at " + services.kitService.path());
                 services.kitService.save();
             }
             if (persistence.whereWasStore != null) {
+                getLogger().info("Writing wherewas coordinates to disk at " + persistence.whereWasStore.path());
                 persistence.whereWasStore.save();
             }
             if (services.reportService != null) {
+                getLogger().info("Writing report index to disk at " + dataPath().resolve("reports/index.json"));
                 services.reportService.saveIndex();
             }
         } catch (IOException exception) {
@@ -231,11 +248,16 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         }
     }
 
+    private Path dataPath() {
+        return getDataFolder().toPath();
+    }
+
     private void stopServices() {
         if (services.compassService != null) {
             services.compassService.stop();
         }
         if (services.webServer != null) {
+            getLogger().info("Stopping embedded web server.");
             services.webServer.stop();
         }
     }

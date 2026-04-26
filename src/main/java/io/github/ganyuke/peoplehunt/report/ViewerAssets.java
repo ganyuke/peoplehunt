@@ -17,9 +17,13 @@ public final class ViewerAssets {
     }
 
     public String render(String reportId, String embeddedSnapshotJson) {
+        String safeSnapshot = embeddedSnapshotJson == null ? "null" : embeddedSnapshotJson
+                .replace("</", "<\\/")
+                .replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029");
         return template
                 .replace("__REPORT_ID__", reportId)
-                .replace("__INLINE_SNAPSHOT__", embeddedSnapshotJson == null ? "null" : embeddedSnapshotJson.replace("</", "<\\/"));
+                .replace("__INLINE_SNAPSHOT__", safeSnapshot);
     }
 
     private static String read(JavaPlugin plugin, String path) throws IOException {

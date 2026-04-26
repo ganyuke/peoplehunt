@@ -102,12 +102,18 @@ public final class EmbeddedWebServer {
             respond(exchange, 404, "Report not found", "text/plain");
             return;
         }
+        UUID reportId;
         try {
-            UUID reportId = UUID.fromString(parts[3]);
+            reportId = UUID.fromString(parts[3]);
+        } catch (IllegalArgumentException exception) {
+            respond(exchange, 404, "Report not found", "text/plain");
+            return;
+        }
+        try {
             String json = gson.toJson(reportService.readSnapshot(reportId));
             respond(exchange, 200, json, "application/json; charset=utf-8");
-        } catch (Exception exception) {
-            respond(exchange, 404, "Report not found", "text/plain");
+        } catch (IOException exception) {
+            respond(exchange, 500, "Unable to read report: " + exception.getMessage(), "text/plain; charset=utf-8");
         }
     }
 

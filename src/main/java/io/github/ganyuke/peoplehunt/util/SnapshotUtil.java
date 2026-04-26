@@ -1,10 +1,12 @@
 package io.github.ganyuke.peoplehunt.util;
 
 import io.github.ganyuke.peoplehunt.report.ReportModels.EffectState;
+import io.github.ganyuke.peoplehunt.report.ReportModels.InventoryEnchant;
 import io.github.ganyuke.peoplehunt.report.ReportModels.InventoryItem;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -39,8 +41,17 @@ public final class SnapshotUtil {
         Material material = stack.getType();
         String rawId = material.getKey().asString();
         String prettyName = itemPrettyName(stack);
-        boolean enchanted = stack.getEnchantments() != null && !stack.getEnchantments().isEmpty();
+        Map<?, ?> rawEnchantments = stack.getEnchantments();
+        boolean enchanted = rawEnchantments != null && !rawEnchantments.isEmpty();
         String textColor = enchanted ? "#ff55ff" : materialTextColor(material);
+        List<InventoryEnchant> enchantments = stack.getEnchantments().entrySet().stream()
+                .map(entry -> new InventoryEnchant(
+                        entry.getKey().getKey().asString(),
+                        PrettyNames.key(entry.getKey().getKey().asString()),
+                        entry.getValue()
+                ))
+                .sorted(Comparator.comparing(InventoryEnchant::prettyName))
+                .toList();
         items.add(new InventoryItem(
                 slot,
                 rawId,
@@ -48,7 +59,8 @@ public final class SnapshotUtil {
                 stack.getAmount(),
                 enchanted,
                 textColor,
-                BukkitSerialization.serializeItem(stack)
+                BukkitSerialization.serializeItem(stack),
+                enchantments
         ));
     }
 
