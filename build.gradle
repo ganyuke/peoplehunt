@@ -4,6 +4,7 @@ import groovy.json.JsonSlurper
 plugins {
     id 'java'
     id('xyz.jpenilla.run-paper') version '2.3.1'
+    id 'com.github.johnrengelman.shadow' version '8.1.1' // <-- Added Shadow plugin
 }
 
 group = 'io.github.ganyuke'
@@ -20,9 +21,6 @@ def cachedLangFile = layout.projectDirectory.file(".gradle/peoplehunt/cache/lang
 def cachedClientJar = layout.projectDirectory.file(".gradle/peoplehunt/cache/lang/${minecraftGameVersion}/client.jar")
 def frontendCacheRoot = layout.projectDirectory.dir('.gradle/peoplehunt/cache/frontend')
 
-// Mojang's launcher metadata is the source of truth for both version metadata and
-// downloadable artifacts. These helpers keep the network logic in one place so the
-// Gradle tasks below stay readable.
 def fetchJson = { String url ->
     URLConnection connection = URI.create(url).toURL().openConnection()
     connection.setConnectTimeout(15000)
@@ -56,27 +54,34 @@ repositories {
 }
 
 dependencies {
-    // Paper API currently brings in older build-time transitive libraries that local
-    // inspection flags. Constrain them here so Gradle resolves safer versions during
-    // compilation without changing the plugin's packaged runtime.
     constraints {
         compileOnly('org.apache.commons:commons-lang3:3.20.0')
         compileOnly('org.codehaus.plexus:plexus-utils:4.0.2')
     }
 
     compileOnly("io.papermc.paper:paper-api:${minecraftGameVersion}-R0.1-SNAPSHOT")
+
+    // <-- Added SQLite JDBC Driver as an implementation dependency
+    implementation 'org.xerial:sqlite-jdbc:3.46.0.0'
 }
 
 tasks {
     runServer {
         minecraftVersion(minecraftGameVersion)
     }
+
+    // <-- Ensures the 'build' task generates the Shadowed JAR
+    build {
+        dependsOn shadowJar
+    }
+}
+
+// <-- Configures the Shadow plugin to replace the standard JAR with the bundled one
+shadowJar {
+    archiveClassifier.set('')
 }
 
 tasks.register('syncOfficialMinecraftEnglish') {
-    // Extract the language file directly from the official client jar.
-    // Mojang's asset index has moved around enough across versions that jar extraction
-    // is simpler and more robust than depending on a particular asset-index key shape.
     description = 'Downloads the official Mojang en_us.json for the configured Minecraft version and stages it into generated resources.'
     outputs.file(generatedLangDir.map { it.file('en_us.json') })
     doLast {
@@ -123,10 +128,7 @@ tasks.register('syncOfficialMinecraftEnglish') {
     }
 }
 
-def frontendArtifacts = [
-        [name: 'preact',       version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/dist/preact.umd.js",           licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],
-        [name: 'preact-hooks', version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/hooks/dist/hooks.umd.js",      licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],
-        [name: 'htm',          version: htmVersion,    url: "https://unpkg.com/htm@${htmVersion}/dist/htm.umd.js",                    licenseUrl: "https://unpkg.com/htm@${htmVersion}/LICENSE"]
+def frontendArtifacts = [[name: 'preact',       version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/dist/preact.umd.js",           licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],[name: 'preact-hooks', version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/hooks/dist/hooks.umd.js",      licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],[name: 'htm',          version: htmVersion,    url: "https://unpkg.com/htm@${htmVersion}/dist/htm.umd.js",                    licenseUrl: "https://unpkg.com/htm@${htmVersion}/LICENSE"]
 ]
 
 tasks.register('syncViewerFrontendAssets') {
@@ -166,8 +168,6 @@ tasks.register('syncViewerFrontendAssets') {
 }
 
 tasks.register('buildInlineViewer') {
-    // The shipped viewer is a single self-contained HTML resource. Build-time inlining
-    // keeps runtime serving trivial and avoids depending on a CDN or external assets.
     description = 'Builds the self-contained Preact report viewer HTML with vendored frontend assets inlined.'
     dependsOn(tasks.named('syncViewerFrontendAssets'))
     outputs.file(generatedWebDir.map { it.file('viewer.inline.html') })
@@ -181,7 +181,7 @@ tasks.register('buildInlineViewer') {
         if (!appFile.exists()) throw new GradleException('Missing viewer-app.js source resource.')
 
         File vendorDir = new File(generatedWebDir.get().asFile, 'vendor')
-        String vendorBundle = [
+        String vendorBundle =[
                 new File(vendorDir, 'preact.js'),
                 new File(vendorDir, 'preact-hooks.js'),
                 new File(vendorDir, 'htm.js')
@@ -220,7 +220,7 @@ processResources {
     dependsOn(tasks.named('buildInlineViewer'))
     dependsOn(tasks.named('syncViewerFrontendAssets'))
 
-    def props = [version: version]
+    def props =[version: version]
     inputs.properties props
     filteringCharset 'UTF-8'
 
