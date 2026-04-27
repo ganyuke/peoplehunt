@@ -88,6 +88,8 @@ shadowJar {
 
 tasks.register('syncOfficialMinecraftEnglish') {
     description = 'Downloads the official Mojang en_us.json for the configured Minecraft version and stages it into generated resources.'
+    inputs.property('minecraftGameVersion', minecraftGameVersion)
+    inputs.property('refreshMinecraftEnglish', project.hasProperty('refreshMinecraftEnglish'))
     outputs.file(generatedLangDir.map { it.file('en_us.json') })
     outputs.file(generatedMinecraftIconsFile)
     boolean refresh = project.hasProperty('refreshMinecraftEnglish')
@@ -176,11 +178,17 @@ tasks.register('syncOfficialMinecraftEnglish') {
     }
 }
 
-def frontendArtifacts = [[name: 'preact',       version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/dist/preact.umd.js",           licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],[name: 'preact-hooks', version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/hooks/dist/hooks.umd.js",      licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],[name: 'htm',          version: htmVersion,    url: "https://unpkg.com/htm@${htmVersion}/dist/htm.umd.js",                    licenseUrl: "https://unpkg.com/htm@${htmVersion}/LICENSE"]
+def frontendArtifacts = [
+        [name: 'preact',       version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/dist/preact.umd.js",      licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],
+        [name: 'preact-hooks', version: preactVersion, url: "https://unpkg.com/preact@${preactVersion}/hooks/dist/hooks.umd.js", licenseUrl: "https://unpkg.com/preact@${preactVersion}/LICENSE"],
+        [name: 'htm',          version: htmVersion,    url: "https://unpkg.com/htm@${htmVersion}/dist/htm.umd.js",               licenseUrl: "https://unpkg.com/htm@${htmVersion}/LICENSE"]
 ]
 
 tasks.register('syncViewerFrontendAssets') {
     description = 'Downloads vendored Preact and htm assets plus license texts for the self-contained report viewer.'
+    inputs.property('preactVersion', preactVersion)
+    inputs.property('htmVersion', htmVersion)
+    inputs.property('refreshViewerFrontend', project.hasProperty('refreshViewerFrontend'))
     outputs.files(frontendArtifacts.collect { artifact -> generatedWebDir.map { it.file("vendor/${artifact.name}.js") } })
     outputs.file(generatedWebDir.map { it.file('THIRD_PARTY_LICENSES.txt') })
     boolean refresh = project.hasProperty('refreshViewerFrontend')
@@ -220,8 +228,20 @@ tasks.register('buildInlineViewer') {
     description = 'Builds the self-contained Preact report viewer HTML with vendored frontend assets inlined.'
     dependsOn(tasks.named('syncViewerFrontendAssets'))
     dependsOn(tasks.named('syncOfficialMinecraftEnglish'))
-    outputs.file(generatedWebDir.map { it.file('viewer.inline.html') })
+
     def webSourceDir = layout.projectDirectory.dir('src/main/resources/web')
+
+    inputs.file(webSourceDir.file('viewer.template.html'))
+    inputs.file(webSourceDir.file('viewer.css'))
+    inputs.file(webSourceDir.file('viewer-app.js'))
+    inputs.file(generatedMinecraftIconsFile)
+    inputs.files(
+            generatedWebDir.map { it.file('vendor/preact.js') },
+            generatedWebDir.map { it.file('vendor/preact-hooks.js') },
+            generatedWebDir.map { it.file('vendor/htm.js') }
+    )
+
+    outputs.file(generatedWebDir.map { it.file('viewer.inline.html') })
 
     doLast {
         File templateFile = webSourceDir.file('viewer.template.html').asFile
@@ -232,7 +252,7 @@ tasks.register('buildInlineViewer') {
         if (!appFile.exists()) throw new GradleException('Missing viewer-app.js source resource.')
 
         File vendorDir = new File(generatedWebDir.get().asFile, 'vendor')
-        String vendorBundle =[
+        String vendorBundle = [
                 new File(vendorDir, 'preact.js'),
                 new File(vendorDir, 'preact-hooks.js'),
                 new File(vendorDir, 'htm.js')
@@ -272,7 +292,7 @@ processResources {
     dependsOn(tasks.named('buildInlineViewer'))
     dependsOn(tasks.named('syncViewerFrontendAssets'))
 
-    def props =[version: version]
+    def props = [version: version]
     inputs.properties props
     filteringCharset = 'UTF-8'
 
