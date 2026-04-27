@@ -873,6 +873,8 @@ public final class MatchManager {
         if (restoreGameMode && state.gameMode() != null) {
             player.setGameMode(state.gameMode());
         }
+
+        // Restore inventory state
         player.getInventory().clear();
         ItemStack[] contents = new ItemStack[player.getInventory().getSize()];
         for (int i = 0; i < contents.length && i < state.contents().size(); i++) {
@@ -885,14 +887,8 @@ public final class MatchManager {
         player.getInventory().setLeggings(state.leggings() == null ? null : state.leggings().clone());
         player.getInventory().setBoots(state.boots() == null ? null : state.boots().clone());
         player.getInventory().setItemInOffHand(state.offHand() == null ? null : state.offHand().clone());
-        var maxHealthAttribute = player.getAttribute(Attribute.MAX_HEALTH);
-        double maxHealth = maxHealthAttribute == null ? state.maxHealth() : maxHealthAttribute.getValue();
-        player.setAbsorptionAmount(state.absorption());
-        player.setHealth(Math.max(0.1, Math.min(maxHealth, state.health())));
-        player.setFoodLevel(state.food());
-        player.setSaturation(state.saturation());
-        player.setLevel(state.level());
-        player.setTotalExperience(state.totalExperience());
+
+        // Restore status effects
         if (restoreEffects) {
             for (var effect : player.getActivePotionEffects()) {
                 player.removePotionEffect(effect.getType());
@@ -901,6 +897,18 @@ public final class MatchManager {
                 player.addPotionEffect(effect);
             }
         }
+
+        // Restore vitals
+        // Must restore health AFTER effects so that health boost appies correctly
+        var maxHealthAttribute = player.getAttribute(Attribute.MAX_HEALTH);
+        double maxHealth = maxHealthAttribute == null ? state.maxHealth() : maxHealthAttribute.getValue();
+        player.setAbsorptionAmount(state.absorption());
+        player.setHealth(Math.max(0.1, Math.min(maxHealth, state.health())));
+        player.setFoodLevel(state.food());
+        player.setSaturation(state.saturation());
+        player.setLevel(state.level());
+        player.setTotalExperience(state.totalExperience());
+
     }
 
 }
