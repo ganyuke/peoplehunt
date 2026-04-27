@@ -71,6 +71,17 @@
     }
     a { color: inherit; text-decoration: none; }
     button, select { font: inherit; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
     button {
       border: 1px solid var(--border-strong);
       border-radius: 0;
@@ -123,8 +134,8 @@
       flex-wrap: wrap;
       justify-content: flex-end;
     }
-    .meta-chip,
-    .theme-toggle {
+    .ui-btn,
+    .open-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -136,14 +147,47 @@
       letter-spacing: 0.06em;
       text-transform: uppercase;
       white-space: nowrap;
-    }
-    .meta-chip {
       border: 1px solid var(--border);
+      background: var(--surface);
       color: var(--muted);
-      background: var(--surface-strong);
     }
-    .theme-toggle:hover {
+    .ui-btn:hover,
+    .open-btn:hover,
+    tbody tr:hover .open-btn {
+      color: var(--text);
+      border-color: var(--border-strong);
       background: var(--surface-hover);
+    }
+    .ui-btn.active {
+      color: var(--text);
+      background: var(--surface-strong);
+      border-color: var(--border-strong);
+    }
+    .theme-toggle {
+      min-width: 112px;
+    }
+    .ui-select {
+      min-height: 34px;
+      padding: 0 28px 0 10px;
+      border: 1px solid var(--border-strong);
+      border-radius: 0;
+      background-color: var(--surface);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    .timezone-wrap {
+      display: inline-flex;
+      min-width: min(280px, 44vw);
+    }
+    .timezone-select {
+      width: 100%;
+      max-width: 100%;
     }
 
     .summary {
@@ -200,20 +244,14 @@
     }
     .spacer { flex: 1 1 auto; }
     .sort-select {
-      min-height: 34px;
-      padding: 0 10px;
-      border: 1px solid var(--border-strong);
-      border-radius: 0;
-      background: var(--surface);
-      color: var(--text);
+      min-width: 150px;
     }
     .filter-group {
       display: inline-flex;
       flex-wrap: wrap;
       gap: 0;
     }
-    .filter-btn,
-    .open-btn {
+    .filter-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -229,9 +267,7 @@
       color: var(--muted);
     }
     .filter-btn + .filter-btn { margin-left: -1px; }
-    .filter-btn:hover,
-    .open-btn:hover,
-    tbody tr:hover .open-btn {
+    .filter-btn:hover {
       color: var(--text);
       border-color: var(--border-strong);
       background: var(--surface-hover);
@@ -348,6 +384,7 @@
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .summary-cell:nth-child(2n) { border-right: 0; }
       .summary-cell:nth-child(n + 3) { border-top: 1px solid var(--border); }
+      .summary-cell:last-child { grid-column: span 2; }
     }
 
     @media (max-width: 720px) {
@@ -359,6 +396,7 @@
       .summary { grid-template-columns: 1fr; }
       .summary-cell { border-right: 0; border-top: 1px solid var(--border); }
       .summary-cell:first-child { border-top: 0; }
+      .summary-cell:last-child { grid-column: unset; }
     }
   </style>
 </head>
@@ -369,8 +407,11 @@
         <div class="wordmark">People<span class="accent">Hunt</span> Archive</div>
       </div>
       <div class="masthead-actions">
-        <div class="meta-chip js-now">--</div>
-        <button id="theme-toggle" class="theme-toggle" type="button">Toggle theme</button>
+        <label class="timezone-wrap">
+          <span class="sr-only">Time zone</span>
+          <select id="timezone-select" class="timezone-select ui-select"></select>
+        </label>
+        <button id="theme-toggle" class="theme-toggle ui-btn" type="button">Toggle theme</button>
       </div>
     </header>
 
@@ -399,7 +440,7 @@
 
     <section class="controls">
       <span class="controls-label">Sort</span>
-      <select id="sort-select" class="sort-select">
+      <select id="sort-select" class="sort-select ui-select">
         <option value="date">Newest first</option>
         <option value="duration">Longest first</option>
         <option value="runner">Runner A-Z</option>
@@ -433,27 +474,33 @@
       </table>
     </section>
 
-    <footer class="footer">PeopleHunt match archive · <span id="timezone-label">All timestamps in your local time</span></footer>
+    <footer class="footer">PeopleHunt match archive ·&nbsp;<span id="timezone-label">All timestamps in your local time</span></footer>
   </main>
 
   <script>
     (() => {
+      const SERVER_TIMEZONE = "__SERVER_TIMEZONE__";
       const root = document.documentElement;
       const storageKey = 'peoplehunt-theme';
+      const timeZoneStorageKey = 'peoplehunt-timezone-selection';
+      const browserTimeZoneKey = 'BROWSER';
+      const serverTimeZoneKey = 'SERVER';
       const sortSelect = document.getElementById('sort-select');
+      const timeZoneSelect = document.getElementById('timezone-select');
       const tbody = document.getElementById('report-tbody');
       const filterButtons = Array.from(document.querySelectorAll('.filter-btn'));
       const sortableHeaders = Array.from(document.querySelectorAll('th.sortable'));
-      const nowEl = document.querySelector('.js-now');
       const themeButton = document.getElementById('theme-toggle');
       const timezoneLabel = document.getElementById('timezone-label');
       const rows = () => Array.from(tbody.querySelectorAll('tr[data-href]'));
       let currentFilter = 'all';
       let currentSort = 'date';
+      let currentTimeZoneSelection = readTimeZonePreference();
       const sortDirection = { date: -1, duration: -1, runner: 1 };
 
       const themeLabel = theme => theme === 'light' ? 'Dark mode' : 'Light mode';
-      const applyTheme = theme => {
+
+      function applyTheme(theme) {
         root.dataset.theme = theme;
         root.style.colorScheme = theme;
         try {
@@ -462,7 +509,136 @@
           // Theme persistence is optional in restricted browser contexts.
         }
         if (themeButton) themeButton.textContent = themeLabel(theme);
-      };
+      }
+
+      function browserTimeZoneId() {
+        try {
+          return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        } catch (error) {
+          return 'UTC';
+        }
+      }
+
+      function supportedTimeZones() {
+        if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+          try {
+            const values = Intl.supportedValuesOf('timeZone');
+            if (Array.isArray(values) && values.length > 0) return values;
+          } catch (error) {
+            // Fall through to a compact manual list when supportedValuesOf is unavailable.
+          }
+        }
+        return [
+          'UTC',
+          'America/New_York',
+          'America/Chicago',
+          'America/Denver',
+          'America/Los_Angeles',
+          'America/Anchorage',
+          'Pacific/Honolulu',
+          'Europe/London',
+          'Europe/Paris',
+          'Europe/Berlin',
+          'Europe/Moscow',
+          'Asia/Tokyo',
+          'Asia/Shanghai',
+          'Asia/Singapore',
+          'Asia/Kolkata',
+          'Australia/Sydney',
+          'Pacific/Auckland'
+        ];
+      }
+
+      function buildTimeZoneOptions(selection) {
+        const browserZone = browserTimeZoneId();
+        const serverZone = SERVER_TIMEZONE || browserZone;
+        const options = [
+          { value: browserTimeZoneKey, label: `${browserZone} (Browser)` },
+          { value: serverTimeZoneKey, label: `${serverZone} (Server)` }
+        ];
+        const seen = new Set([browserZone, serverZone]);
+        supportedTimeZones().forEach(zone => {
+          if (!zone || seen.has(zone)) return;
+          seen.add(zone);
+          options.push({ value: zone, label: zone });
+        });
+        if (selection && !options.some(option => option.value === selection)) {
+          options.splice(2, 0, { value: selection, label: selection });
+        }
+        return options;
+      }
+
+      function readTimeZonePreference() {
+        try {
+          return window.localStorage.getItem(timeZoneStorageKey) || browserTimeZoneKey;
+        } catch (error) {
+          return browserTimeZoneKey;
+        }
+      }
+
+      function persistTimeZonePreference(selection) {
+        try {
+          window.localStorage.setItem(timeZoneStorageKey, selection);
+        } catch (error) {
+          // Time zone persistence is optional.
+        }
+      }
+
+      function resolveTimeZoneId(selection) {
+        if (selection === serverTimeZoneKey) return SERVER_TIMEZONE || browserTimeZoneId();
+        if (selection === browserTimeZoneKey || !selection) return browserTimeZoneId();
+        return selection;
+      }
+
+      function timeZoneLabelText(selection) {
+        if (selection === serverTimeZoneKey) return `${SERVER_TIMEZONE || browserTimeZoneId()} (Server)`;
+        if (selection === browserTimeZoneKey || !selection) return `${browserTimeZoneId()} (Browser)`;
+        return resolveTimeZoneId(selection);
+      }
+
+      function formatDateTime(epoch) {
+        const value = Number(epoch);
+        if (!Number.isFinite(value) || value <= 0) return '--';
+        try {
+          return new Intl.DateTimeFormat(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: resolveTimeZoneId(currentTimeZoneSelection)
+          }).format(new Date(value));
+        } catch (error) {
+          return new Date(value).toLocaleString();
+        }
+      }
+
+      function renderDateTimes() {
+        document.querySelectorAll('.js-datetime').forEach(element => {
+          element.textContent = formatDateTime(element.dataset.epoch);
+        });
+      }
+
+      function renderTimeZoneOptions() {
+        if (!timeZoneSelect) return;
+        const options = buildTimeZoneOptions(currentTimeZoneSelection);
+        timeZoneSelect.innerHTML = options.map(option => `<option value="${option.value}">${option.label}</option>`).join('');
+        timeZoneSelect.value = currentTimeZoneSelection;
+      }
+
+      function renderTimeZoneNote() {
+        if (timezoneLabel) {
+          timezoneLabel.textContent = `All timestamps in ${timeZoneLabelText(currentTimeZoneSelection)}`;
+        }
+      }
+
+      function applyTimeZoneSelection(selection) {
+        currentTimeZoneSelection = selection || browserTimeZoneKey;
+        persistTimeZonePreference(currentTimeZoneSelection);
+        renderTimeZoneOptions();
+        renderDateTimes();
+        renderTimeZoneNote();
+      }
 
       if (themeButton) {
         themeButton.textContent = themeLabel(root.dataset.theme || 'dark');
@@ -471,47 +647,13 @@
         });
       }
 
-      const formatDateTime = epoch => {
-        const value = Number(epoch);
-        if (!Number.isFinite(value) || value <= 0) return '--';
-        return new Date(value).toLocaleString(undefined, {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
+      if (timeZoneSelect) {
+        timeZoneSelect.addEventListener('change', () => {
+          applyTimeZoneSelection(timeZoneSelect.value);
         });
-      };
-
-      const resolvedTimeZone = () => {
-        try {
-          return Intl.DateTimeFormat().resolvedOptions().timeZone || 'your local time';
-        } catch (error) {
-          return 'your local time';
-        }
-      };
-
-      const formatNow = () => new Date().toLocaleString(undefined, {
-        weekday: 'short',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-
-      document.querySelectorAll('.js-datetime').forEach(element => {
-        element.textContent = formatDateTime(element.dataset.epoch);
-      });
-      if (timezoneLabel) {
-        timezoneLabel.textContent = `All timestamps in ${resolvedTimeZone()}`;
       }
-      if (nowEl) {
-        nowEl.textContent = formatNow();
-        window.setInterval(() => {
-          nowEl.textContent = formatNow();
-        }, 30000);
-      }
+
+      applyTimeZoneSelection(currentTimeZoneSelection);
 
       document.querySelectorAll('tr[data-href]').forEach(row => {
         row.addEventListener('click', event => {

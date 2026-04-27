@@ -4,6 +4,7 @@ const html = window.htm.bind(h);
 
 const initialSnapshot = window.PEOPLEHUNT_SNAPSHOT;
 const REPORT_ID = window.PEOPLEHUNT_REPORT_ID;
+const SERVER_TIMEZONE = window.PEOPLEHUNT_SERVER_TIMEZONE || 'UTC';
 const MC_ICONS = window.PEOPLEHUNT_ICONS || {};
 const ICON_KEYS = Object.keys(MC_ICONS);
 const MOB_COLOR = '#8b6f47';
@@ -19,6 +20,9 @@ const DEFAULT_LAYERS = Object.freeze({
 });
 
 const THEME_STORAGE_KEY = 'peoplehunt-theme';
+const TIMEZONE_STORAGE_KEY = 'peoplehunt-timezone-selection';
+const BROWSER_TIMEZONE_KEY = 'BROWSER';
+const SERVER_TIMEZONE_KEY = 'SERVER';
 
 function readThemePreference() {
     const active = document.documentElement.dataset.theme;
@@ -42,6 +46,129 @@ function applyThemePreference(theme) {
         // Persisting theme is optional; rendering should continue without it.
     }
     return next;
+}
+
+function browserTimeZoneId() {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch (error) {
+        return 'UTC';
+    }
+}
+
+function supportedTimeZones() {
+    if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+        try {
+            const values = Intl.supportedValuesOf('timeZone');
+            if (Array.isArray(values) && values.length > 0) return values;
+        } catch (error) {
+            // Fall through to a compact manual list when supportedValuesOf is unavailable.
+        }
+    }
+    return [
+        'UTC',
+        'America/New_York',
+        'America/Chicago',
+        'America/Denver',
+        'America/Los_Angeles',
+        'America/Anchorage',
+        'Pacific/Honolulu',
+        'Europe/London',
+        'Europe/Paris',
+        'Europe/Berlin',
+        'Europe/Moscow',
+        'Asia/Tokyo',
+        'Asia/Shanghai',
+        'Asia/Singapore',
+        'Asia/Kolkata',
+        'Australia/Sydney',
+        'Pacific/Auckland'
+    ];
+}
+
+function buildTimeZoneOptions() {
+    const browserZone = browserTimeZoneId();
+    const serverZone = SERVER_TIMEZONE || browserZone;
+    const zones = supportedTimeZones();
+    const seen = new Set();
+    const options = [
+        { value: BROWSER_TIMEZONE_KEY, label: `${browserZone} (Browser)` },
+        { value: SERVER_TIMEZONE_KEY, label: `${serverZone} (Server)` }
+    ];
+    seen.add(browserZone);
+    seen.add(serverZone);
+    zones.forEach(zone => {
+        if (!zone || seen.has(zone)) return;
+        seen.add(zone);
+        options.push({ value: zone, label: zone });
+    });
+    return options;
+}
+
+function readTimeZonePreference() {
+    try {
+        const stored = window.localStorage.getItem(TIMEZONE_STORAGE_KEY);
+        if (stored) return stored;
+    } catch (error) {
+        // localStorage can be unavailable in hardened browser contexts.
+    }
+    return BROWSER_TIMEZONE_KEY;
+}
+
+function applyTimeZonePreference(selection) {
+    const next = selection || BROWSER_TIMEZONE_KEY;
+    try {
+        window.localStorage.setItem(TIMEZONE_STORAGE_KEY, next);
+    } catch (error) {
+        // Persisting timezone selection is optional.
+    }
+    return next;
+}
+
+function resolveTimeZoneId(selection) {
+    if (selection === SERVER_TIMEZONE_KEY) return SERVER_TIMEZONE || browserTimeZoneId();
+    if (selection === BROWSER_TIMEZONE_KEY || !selection) return browserTimeZoneId();
+    return selection;
+}
+
+function timeZoneLabel(selection) {
+    if (selection === SERVER_TIMEZONE_KEY) return `${SERVER_TIMEZONE || browserTimeZoneId()} (Server)`;
+    if (selection === BROWSER_TIMEZONE_KEY || !selection) return `${browserTimeZoneId()} (Browser)`;
+    return resolveTimeZoneId(selection);
+}
+
+function formatAbsoluteDateTime(epochMillis, selection, options = {}) {
+    const value = Number(epochMillis);
+    if (!Number.isFinite(value) || value <= 0) return '--';
+    const formatterOptions = {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: resolveTimeZoneId(selection),
+        ...options
+    };
+    try {
+        return new Intl.DateTimeFormat(undefined, formatterOptions).format(new Date(value));
+    } catch (error) {
+        return new Date(value).toLocaleString();
+    }
+}
+
+function reportIdLabel(reportId) {
+    if (!reportId) return null;
+    const value = String(reportId);
+    return { short: `Report ID ${value.slice(0, 8)}`, full: value };
+}
+
+function TimeZoneSelect({ value, onChange, options }) {
+    return html`<label class="timezone-select-wrap">
+        <span class="sr-only">Time zone</span>
+        <select class="timezone-select select" value=${value} onChange=${event => onChange(event.target.value)}>
+            ${options.map(option => html`<option value=${option.value}>${option.label}</option>`)}
+        </select>
+    </label>`;
 }
 
 
@@ -1061,6 +1188,7 @@ function useResizeBox(ref) {
 
 function App() {
     const [theme, setTheme] = useState(readThemePreference);
+    const [timeZoneSelection, setTimeZoneSelection] = useState(readTimeZonePreference);
     const [snapshot, setSnapshot] = useState(initialSnapshot);
     const [loading, setLoading] = useState(!initialSnapshot && !!REPORT_ID && REPORT_ID !== 'LOCAL_EXPORT');
     const [loadError, setLoadError] = useState(null);
@@ -1078,6 +1206,15 @@ function App() {
         applyThemePreference(theme);
     }, [theme]);
 
+    useEffect(() => {
+        applyTimeZonePreference(timeZoneSelection);
+    }, [timeZoneSelection]);
+
+    const timeZoneOptions = useMemo(() => buildTimeZoneOptions(), []);
+    const activeTimeZoneLabel = timeZoneLabel(timeZoneSelection);
+    const localExport = REPORT_ID === 'LOCAL_EXPORT';
+    const activeReportId = snapshot?.metadata?.reportId || (REPORT_ID && REPORT_ID !== 'LOCAL_EXPORT' ? REPORT_ID : null);
+    const activeReportIdLabel = reportIdLabel(activeReportId);
 
     const togglePlayback = () => {
         if (playing) {
@@ -1171,21 +1308,27 @@ function App() {
     }, [selectedPoint, selectedWorld, snapshot]);
 
     if (!snapshot) {
-        if (loading) return html`<div class="shell"><div class="viewer-toolbar"><a class="toolbar-link" href="/">Archive</a><div class="toolbar-spacer"></div><button class="theme-toggle-btn ${theme === 'light' ? 'active' : ''}" onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button></div><div class="card empty">Loading report data...</div></div>`;
-        return html`<div class="shell"><div class="viewer-toolbar"><a class="toolbar-link" href="/">Archive</a><div class="toolbar-spacer"></div><button class="theme-toggle-btn ${theme === 'light' ? 'active' : ''}" onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button></div><div class="card empty">${loadError || 'No report data available.'}${REPORT_ID ? html`<div class="muted">Report ID: ${REPORT_ID}</div>` : null}</div></div>`;
+        const toolbar = html`<div class="viewer-toolbar">
+            ${localExport ? html`<div class="toolbar-text">Local Export</div>` : html`<a class="toolbar-link ui-btn" href="/">Archive</a>`}
+            ${activeReportIdLabel ? html`<div class="toolbar-chip" title=${activeReportIdLabel.full}>${activeReportIdLabel.short}</div>` : null}
+            <div class="toolbar-spacer"></div>
+            <${TimeZoneSelect} value=${timeZoneSelection} onChange=${setTimeZoneSelection} options=${timeZoneOptions} />
+            <button class="theme-toggle-btn ui-btn" onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button>
+        </div>`;
+        if (loading) return html`<div class="shell">${toolbar}<div class="card empty">Loading report data...</div></div>`;
+        return html`<div class="shell">${toolbar}<div class="card empty">${loadError || 'No report data available.'}${activeReportId ? html`<div class="muted">Report ID: ${activeReportId}</div>` : null}</div></div>`;
     }
 
     return html`
         <div class="shell">
             <div class="viewer-toolbar">
-                <a class="toolbar-link" href="/">Archive</a>
-                <div class="toolbar-chip">${displayMatchValue(snapshot.metadata.runnerName, 'Unknown')}</div>
-                <div class="toolbar-chip">${pretty(snapshot.metadata.outcome)}</div>
-                ${REPORT_ID && REPORT_ID !== 'LOCAL_EXPORT' ? html`<div class="toolbar-chip">Report ${REPORT_ID.slice(0, 8)}</div>` : null}
+                ${localExport ? html`<div class="toolbar-text">Local Export</div>` : html`<a class="toolbar-link ui-btn" href="/">Archive</a>`}
+                ${activeReportIdLabel ? html`<div class="toolbar-chip" title=${activeReportIdLabel.full}>${activeReportIdLabel.short}</div>` : null}
                 <div class="toolbar-spacer"></div>
-                <button class=${`theme-toggle-btn ${theme === 'light' ? 'active' : ''}`} onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button>
+                <${TimeZoneSelect} value=${timeZoneSelection} onChange=${setTimeZoneSelection} options=${timeZoneOptions} />
+                <button class="theme-toggle-btn ui-btn" onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button>
             </div>
-            <${MatchInfoCard} meta=${snapshot.metadata} duration=${duration} />
+            <${MatchInfoCard} meta=${snapshot.metadata} duration=${duration} timeZoneSelection=${timeZoneSelection} activeTimeZoneLabel=${activeTimeZoneLabel} />
             <${PlaybackControlsCard}
                 snapshot=${snapshot}
                 selectedPlayer=${selectedPlayer}
@@ -1253,19 +1396,20 @@ function App() {
         </div>`;
 }
 
-function MatchInfoCard({ meta, duration }) {
+function MatchInfoCard({ meta, duration, timeZoneSelection, activeTimeZoneLabel }) {
     const rows = [
         ['Runner', displayMatchValue(meta.runnerName, 'Unknown')],
         ['Outcome', pretty(meta.outcome)],
         ['Duration', formatMatchDuration(duration)],
-        ['Started', new Date(meta.startedAtEpochMillis).toLocaleString()],
-        ['Ended', new Date(meta.endedAtEpochMillis).toLocaleString()],
+        ['Started', formatAbsoluteDateTime(meta.startedAtEpochMillis, timeZoneSelection)],
+        ['Ended', formatAbsoluteDateTime(meta.endedAtEpochMillis, timeZoneSelection)],
         ['Selected Kit', displayMatchValue(meta.activeKitId)],
         ['Hunter Inventory Level', displayMatchValue(meta.keepInventoryMode)]
     ];
     return html`<section class="card meta-card">
         <div class="card-header">
             <div class="card-title">Match info</div>
+            <div class="card-subtitle">All timestamps in ${activeTimeZoneLabel}</div>
         </div>
         <div class="meta-list">
             ${rows.map(([label, value]) => html`<div class="meta-row">

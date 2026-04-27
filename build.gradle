@@ -1,5 +1,6 @@
-import java.net.URI
+import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import java.util.zip.ZipFile
 
 plugins {
     id 'java'
@@ -8,7 +9,7 @@ plugins {
 }
 
 group = 'io.github.ganyuke'
-version = '0.3.1'
+version = '0.4.0'
 
 def minecraftGameVersion = (findProperty('minecraftGameVersion') ?: '1.21.11').toString()
 def preactVersion = (findProperty('preactVersion') ?: '10.29.1').toString()
@@ -60,6 +61,8 @@ dependencies {
         compileOnly('org.codehaus.plexus:plexus-utils:4.0.2')
     }
 
+    // no way to solve issue with vulnerable library, that's an upstream issue
+    //noinspection VulnerableLibrariesLocal
     compileOnly("io.papermc.paper:paper-api:${minecraftGameVersion}-R0.1-SNAPSHOT")
 
     // <-- Added SQLite JDBC Driver as an implementation dependency
@@ -108,7 +111,7 @@ tasks.register('syncOfficialMinecraftEnglish') {
                 downloadFile(clientUrl, clientJarFile)
             }
             clientJarFile.parentFile.mkdirs()
-            def zip = new java.util.zip.ZipFile(clientJarFile)
+            def zip = new ZipFile(clientJarFile)
             try {
                 def entry = zip.getEntry('assets/minecraft/lang/en_us.json')
                 if (entry == null) {
@@ -133,7 +136,7 @@ tasks.register('syncOfficialMinecraftEnglish') {
         File iconFile = generatedMinecraftIconsFile.get().asFile
         iconFile.parentFile.mkdirs()
         def icons = [:]
-        def zip = new java.util.zip.ZipFile(clientJarFile)
+        def zip = new ZipFile(clientJarFile)
         try {
             zip.entries().each { entry ->
                 if (entry.directory || !entry.name.endsWith('.png')) return
@@ -169,7 +172,7 @@ tasks.register('syncOfficialMinecraftEnglish') {
         } finally {
             zip.close()
         }
-        iconFile.text = groovy.json.JsonOutput.toJson(icons)
+        iconFile.text = JsonOutput.toJson(icons)
     }
 }
 

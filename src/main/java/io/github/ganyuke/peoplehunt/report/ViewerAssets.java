@@ -4,15 +4,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.time.ZoneId;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class ViewerAssets {
     private final String viewerTemplate;
     private final String indexTemplate;
+    private final String serverTimeZoneId;
 
     public ViewerAssets(JavaPlugin plugin) throws IOException {
         this.viewerTemplate = read(plugin, "web/viewer.inline.html");
         this.indexTemplate = read(plugin, "web/index.template.html");
+        this.serverTimeZoneId = ZoneId.systemDefault().getId();
     }
 
     public String render(String reportId) {
@@ -26,11 +29,13 @@ public final class ViewerAssets {
                 .replace("\u2029", "\\u2029");
         return viewerTemplate
                 .replace("__REPORT_ID__", reportId)
+                .replace("__SERVER_TIMEZONE__", serverTimeZoneId)
                 .replace("__INLINE_SNAPSHOT__", safeSnapshot);
     }
 
     public String renderIndex(Map<String, String> replacements) {
         String html = indexTemplate;
+        html = html.replace("__SERVER_TIMEZONE__", serverTimeZoneId);
         for (Map.Entry<String, String> entry : replacements.entrySet()) {
             html = html.replace(entry.getKey(), entry.getValue());
         }
