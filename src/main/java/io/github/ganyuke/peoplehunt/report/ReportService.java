@@ -7,6 +7,7 @@ import io.github.ganyuke.peoplehunt.game.match.MatchOutcome;
 import io.github.ganyuke.peoplehunt.report.ReportModels.*;
 import io.github.ganyuke.peoplehunt.util.HtmlUtil;
 import io.github.ganyuke.peoplehunt.util.LocationUtil;
+import io.github.ganyuke.peoplehunt.util.PrettyNames;
 import io.github.ganyuke.peoplehunt.util.Text;
 import io.github.ganyuke.peoplehunt.util.ZipUtil;
 import java.io.IOException;
@@ -765,13 +766,65 @@ public final class ReportService {
     }
 
     public void finishMobTrack(UUID entityUuid) {
+        finishMobTrack(entityUuid, null, "untracked");
+    }
+
+    public void finishMobTrack(UUID entityUuid, Location location, String endReason) {
         if (currentSession == null || entityUuid == null) {
             return;
         }
         TrackedMob mob = currentSession.mobs.get(entityUuid);
         if (mob != null) {
-            mob.end(offset());
+            long now = offset();
+            mob.end(location, now, endReason);
         }
+    }
+
+    public void recordMobDeath(
+            UUID entityUuid,
+            String entityType,
+            UUID targetPlayerUuid,
+            String targetPlayerName,
+            UUID killerUuid,
+            String killerName,
+            String killerEntityType,
+            String cause,
+            String weapon,
+            Location location
+    ) {
+        if (currentSession == null || entityUuid == null) {
+            return;
+        }
+        long now = offset();
+        currentSession.mobDeaths.add(new MobDeathRecord(
+                now,
+                entityUuid,
+                entityType,
+                targetPlayerUuid,
+                targetPlayerName,
+                killerUuid,
+                killerName,
+                killerEntityType,
+                cause,
+                weapon,
+                LocationUtil.toRecord(location)
+        ));
+
+        String victimText = PrettyNames.enumName(entityType == null ? "UNKNOWN" : entityType);
+        String killerText = killerName;
+        if (killerText == null || killerText.isBlank()) {
+            killerText = killerEntityType == null || killerEntityType.isBlank()
+                    ? null
+                    : PrettyNames.enumName(killerEntityType);
+        }
+        StringBuilder description = new StringBuilder(victimText).append(" died");
+        if (killerText != null && !killerText.isBlank()) {
+            description.append(" · by ").append(killerText);
+        }
+        if (weapon != null && !weapon.isBlank()) {
+            description.append(" · ").append(PrettyNames.enumName(weapon));
+        }
+        currentSession.timeline.add(new TimelineRecord(now, targetPlayerUuid, targetPlayerName, "mob_death", description.toString(), entityType, "#f97316"));
     }
 
     public void recordDragonSample(Location location, float health, float maxHealth) {
@@ -833,6 +886,7 @@ public final class ReportService {
                 List.copyOf(session.chat),
                 session.projectiles.values().stream().map(TrackedProjectile::toRecord).toList(),
                 session.mobs.values().stream().map(TrackedMob::toRecord).toList(),
+                List.copyOf(session.mobDeaths),
                 List.copyOf(session.markers),
                 List.copyOf(session.dragon),
                 session.endCrystals.values().stream().map(MutableCrystal::toRecord).toList(),
@@ -1042,8 +1096,9 @@ public final class ReportService {
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS chat (idx INTEGER PRIMARY KEY, offset_ms INTEGER, kind TEXT, player_uuid TEXT, player_name TEXT, html TEXT, plain_text TEXT)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS projectiles (projectile_uuid TEXT PRIMARY KEY, shooter_uuid TEXT, shooter_name TEXT, shooter_entity_type TEXT, type TEXT, kind TEXT, color_hex TEXT, launched_at_offset_ms INTEGER, ended_at_offset_ms INTEGER)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS projectile_points (projectile_uuid TEXT, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS mobs (entity_uuid TEXT PRIMARY KEY, entity_type TEXT, target_player_uuid TEXT, target_player_name TEXT, color_hex TEXT, started_at_offset_ms INTEGER, ended_at_offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS mobs (entity_uuid TEXT PRIMARY KEY, entity_type TEXT, target_player_uuid TEXT, target_player_name TEXT, color_hex TEXT, started_at_offset_ms INTEGER, ended_at_offset_ms INTEGER, end_reason TEXT)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS mob_points (entity_uuid TEXT, point_idx INTEGER, world TEXT, x REAL, y REAL, z REAL, offset_ms INTEGER)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS mob_deaths (idx INTEGER PRIMARY KEY, offset_ms INTEGER, entity_uuid TEXT, entity_type TEXT, target_player_uuid TEXT, target_player_name TEXT, killer_uuid TEXT, killer_name TEXT, killer_entity_type TEXT, cause TEXT, weapon TEXT, location_json TEXT)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS map_markers (marker_uuid TEXT PRIMARY KEY, offset_ms INTEGER, ended_at_offset_ms INTEGER, kind TEXT, player_uuid TEXT, player_name TEXT, world TEXT, x REAL, y REAL, z REAL, label TEXT, description TEXT, color_hex TEXT)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS dragon_samples (idx INTEGER PRIMARY KEY, offset_ms INTEGER, world TEXT, x REAL, y REAL, z REAL, health REAL, max_health REAL)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS end_crystals (crystal_uuid TEXT PRIMARY KEY, world TEXT, x REAL, y REAL, z REAL, spawned_at_offset_ms INTEGER, destroyed_at_offset_ms INTEGER)");
@@ -1069,6 +1124,7 @@ public final class ReportService {
             statement.executeUpdate("DELETE FROM projectile_points");
             statement.executeUpdate("DELETE FROM mobs");
             statement.executeUpdate("DELETE FROM mob_points");
+            statement.executeUpdate("DELETE FROM mob_deaths");
             statement.executeUpdate("DELETE FROM map_markers");
             statement.executeUpdate("DELETE FROM dragon_samples");
             statement.executeUpdate("DELETE FROM end_crystals");
@@ -1319,7 +1375,7 @@ public final class ReportService {
             ps.executeBatch();
             points.executeBatch();
         }
-        try (PreparedStatement ps = connection.prepareStatement("INSERT INTO mobs VALUES (?, ?, ?, ?, ?, ?, ?)"); PreparedStatement points = connection.prepareStatement("INSERT INTO mob_points VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+        try (PreparedStatement ps = connection.prepareStatement("INSERT INTO mobs VALUES (?, ?, ?, ?, ?, ?, ?, ?)"); PreparedStatement points = connection.prepareStatement("INSERT INTO mob_points VALUES (?, ?, ?, ?, ?, ?, ?)")) {
             for (MobTrackRecord record : snapshot.mobs()) {
                 ps.setString(1, record.entityUuid().toString());
                 ps.setString(2, record.entityType());
@@ -1328,6 +1384,7 @@ public final class ReportService {
                 ps.setString(5, record.colorHex());
                 ps.setLong(6, record.startedAtOffsetMillis());
                 if (record.endedAtOffsetMillis() == null) ps.setNull(7, java.sql.Types.BIGINT); else ps.setLong(7, record.endedAtOffsetMillis());
+                ps.setString(8, record.endReason());
                 ps.addBatch();
                 int pidx = 0;
                 for (SimplePoint point : record.points()) {
@@ -1343,6 +1400,25 @@ public final class ReportService {
             }
             ps.executeBatch();
             points.executeBatch();
+        }
+        try (PreparedStatement ps = connection.prepareStatement("INSERT INTO mob_deaths VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)") ) {
+            int idx = 0;
+            for (MobDeathRecord record : snapshot.mobDeaths()) {
+                ps.setInt(1, idx++);
+                ps.setLong(2, record.offsetMillis());
+                ps.setString(3, toString(record.entityUuid()));
+                ps.setString(4, record.entityType());
+                ps.setString(5, toString(record.targetPlayerUuid()));
+                ps.setString(6, record.targetPlayerName());
+                ps.setString(7, toString(record.killerUuid()));
+                ps.setString(8, record.killerName());
+                ps.setString(9, record.killerEntityType());
+                ps.setString(10, record.cause());
+                ps.setString(11, record.weapon());
+                ps.setString(12, gson.toJson(record.location()));
+                ps.addBatch();
+            }
+            ps.executeBatch();
         }
         try (PreparedStatement ps = connection.prepareStatement("INSERT INTO map_markers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
             for (MapMarker record : snapshot.markers()) {
@@ -1628,6 +1704,7 @@ public final class ReportService {
             }
             List<ProjectileRecord> projectiles = readProjectiles(connection, tables, columnsByTable);
             List<MobTrackRecord> mobs = readMobs(connection, tables, columnsByTable);
+            List<MobDeathRecord> mobDeaths = readMobDeaths(connection, tables, columnsByTable);
             List<MapMarker> markers = new ArrayList<>();
             if (tables.contains("map_markers")) {
                 Set<String> markerColumns = tableColumns(connection, columnsByTable, "map_markers");
@@ -1784,7 +1861,7 @@ public final class ReportService {
                     }
                 }
             }
-            return new ViewerSnapshot(metadata, participants, stats, damage, deaths, paths, milestones, chat, projectiles, mobs, markers, dragon, endCrystals, food, effects, totems, blocks, timeline);
+            return new ViewerSnapshot(metadata, participants, stats, damage, deaths, paths, milestones, chat, projectiles, mobs, mobDeaths, markers, dragon, endCrystals, food, effects, totems, blocks, timeline);
         } catch (Exception exception) {
             throw new IOException("Unable to read sqlite report", exception);
         }
@@ -2051,11 +2128,38 @@ public final class ReportService {
                         stringOrNull(rs, mobColumns, "color_hex"),
                         longOrDefault(rs, mobColumns, "started_at_offset_ms", 0L),
                         nullableLong(rs, mobColumns, "ended_at_offset_ms"),
+                        stringOrNull(rs, mobColumns, "end_reason"),
                         pointsByMob.getOrDefault(entityUuid, List.of())
                 ));
             }
         }
         return mobs;
+    }
+
+    private List<MobDeathRecord> readMobDeaths(Connection connection, Set<String> tables, Map<String, Set<String>> columnsByTable) throws Exception {
+        if (!tables.contains("mob_deaths")) {
+            return List.of();
+        }
+        Set<String> mobDeathColumns = tableColumns(connection, columnsByTable, "mob_deaths");
+        List<MobDeathRecord> mobDeaths = new ArrayList<>();
+        try (Statement statement = connection.createStatement(); ResultSet rs = statement.executeQuery("SELECT * FROM mob_deaths ORDER BY idx")) {
+            while (rs.next()) {
+                mobDeaths.add(new MobDeathRecord(
+                        longOrDefault(rs, mobDeathColumns, "offset_ms", 0L),
+                        uuid(stringOrNull(rs, mobDeathColumns, "entity_uuid")),
+                        stringOrNull(rs, mobDeathColumns, "entity_type"),
+                        uuid(stringOrNull(rs, mobDeathColumns, "target_player_uuid")),
+                        stringOrNull(rs, mobDeathColumns, "target_player_name"),
+                        uuid(stringOrNull(rs, mobDeathColumns, "killer_uuid")),
+                        stringOrNull(rs, mobDeathColumns, "killer_name"),
+                        stringOrNull(rs, mobDeathColumns, "killer_entity_type"),
+                        stringOrNull(rs, mobDeathColumns, "cause"),
+                        stringOrNull(rs, mobDeathColumns, "weapon"),
+                        locationOrNull(rs, mobDeathColumns, "location_json")
+                ));
+            }
+        }
+        return mobDeaths;
     }
 
     private Set<String> existingTables(Connection connection) throws SQLException {
@@ -2197,6 +2301,7 @@ public final class ReportService {
         private final List<ChatRecord> chat = new ArrayList<>();
         private final Map<UUID, TrackedProjectile> projectiles = new LinkedHashMap<>();
         private final Map<UUID, TrackedMob> mobs = new LinkedHashMap<>();
+        private final List<MobDeathRecord> mobDeaths = new ArrayList<>();
         private final List<MapMarker> markers = new ArrayList<>();
         private final Map<String, MapMarker> spawnMarkers = new HashMap<>();
         private final List<DragonSample> dragon = new ArrayList<>();
@@ -2298,6 +2403,7 @@ public final class ReportService {
         private final String colorHex;
         private final long startedAtOffsetMillis;
         private Long endedAtOffsetMillis;
+        private String endReason;
         private final List<SimplePoint> points = new ArrayList<>();
 
         private TrackedMob(UUID entityUuid, String entityType, UUID targetPlayerUuid, String targetPlayerName, String colorHex, long startedAtOffsetMillis) {
@@ -2313,6 +2419,7 @@ public final class ReportService {
             this.targetPlayerUuid = targetPlayerUuid;
             this.targetPlayerName = targetPlayerName;
             this.endedAtOffsetMillis = null;
+            this.endReason = null;
             if (location == null || location.getWorld() == null) {
                 return;
             }
@@ -2330,12 +2437,27 @@ public final class ReportService {
             }
         }
 
-        private void end(long offsetMillis) {
+        private void end(Location location, long offsetMillis, String endReason) {
+            if (location != null && location.getWorld() != null) {
+                SimplePoint point = LocationUtil.toSimplePoint(location, offsetMillis);
+                if (points.isEmpty()) {
+                    points.add(point);
+                } else {
+                    SimplePoint last = points.get(points.size() - 1);
+                    if (!last.world().equals(point.world())
+                            || Math.abs(last.x() - point.x()) > 0.1
+                            || Math.abs(last.y() - point.y()) > 0.1
+                            || Math.abs(last.z() - point.z()) > 0.1) {
+                        points.add(point);
+                    }
+                }
+            }
             this.endedAtOffsetMillis = offsetMillis;
+            this.endReason = endReason;
         }
 
         private MobTrackRecord toRecord() {
-            return new MobTrackRecord(entityUuid, entityType, targetPlayerUuid, targetPlayerName, colorHex, startedAtOffsetMillis, endedAtOffsetMillis, List.copyOf(points));
+            return new MobTrackRecord(entityUuid, entityType, targetPlayerUuid, targetPlayerName, colorHex, startedAtOffsetMillis, endedAtOffsetMillis, endReason, List.copyOf(points));
         }
     }
 

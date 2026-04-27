@@ -221,7 +221,22 @@ public final class ReportModels {
             String colorHex,
             long startedAtOffsetMillis,
             Long endedAtOffsetMillis,
+            String endReason,
             List<SimplePoint> points
+    ) {}
+
+    public record MobDeathRecord(
+            long offsetMillis,
+            UUID entityUuid,
+            String entityType,
+            UUID targetPlayerUuid,
+            String targetPlayerName,
+            UUID killerUuid,
+            String killerName,
+            String killerEntityType,
+            String cause,
+            String weapon,
+            LocationRecord location
     ) {}
 
     public record MapMarker(
@@ -281,6 +296,7 @@ public final class ReportModels {
             List<ChatRecord> chat,
             List<ProjectileRecord> projectiles,
             List<MobTrackRecord> mobs,
+            List<MobDeathRecord> mobDeaths,
             List<MapMarker> markers,
             List<DragonSample> dragon,
             List<EndCrystalRecord> endCrystals,

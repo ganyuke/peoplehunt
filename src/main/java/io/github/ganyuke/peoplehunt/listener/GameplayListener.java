@@ -40,6 +40,7 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByBlockEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.EntityPotionEffectEvent;
 import org.bukkit.event.entity.EntityRegainHealthEvent;
@@ -158,6 +159,35 @@ public final class GameplayListener implements Listener {
     public void onProjectileHit(ProjectileHitEvent event) {
         attributionManager.trackProjectileHit(event.getEntity());
         attributionManager.trackHostileProjectileHit(event.getEntity());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityDeath(EntityDeathEvent event) {
+        if (event instanceof PlayerDeathEvent) return;
+        MatchSession session = matchManager.getSession();
+        if (session == null) return;
+        LivingEntity livingEntity = event.getEntity();
+
+        MatchSession.TrackedMobState tracked = session.trackedMobs.remove(livingEntity.getUniqueId());
+        if (tracked == null) {
+            return;
+        }
+
+        reportService.finishMobTrack(livingEntity.getUniqueId(), livingEntity.getLocation(), "death");
+        AttributionManager.DeathAttribution attribution = attributionManager.resolveLivingEntityDeathAttribution(livingEntity, event.getDamageSource());
+        String cause = livingEntity.getLastDamageCause() == null ? "UNKNOWN" : livingEntity.getLastDamageCause().getCause().name();
+        reportService.recordMobDeath(
+                livingEntity.getUniqueId(),
+                livingEntity.getType().name(),
+                tracked.targetPlayerUuid,
+                tracked.targetPlayerName,
+                attribution == null ? null : attribution.killerUuid(),
+                attribution == null ? null : attribution.killerName(),
+                attribution == null ? null : attribution.killerEntityType(),
+                cause,
+                attribution == null ? null : attribution.weapon(),
+                livingEntity.getLocation()
+        );
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

@@ -289,7 +289,7 @@ public class MatchTickService {
                 }
             }
             if (entity == null || !entity.isValid() || stale || far) {
-                reportService.finishMobTrack(entry.getKey());
+                reportService.finishMobTrack(entry.getKey(), entity == null ? null : entity.getLocation(), entity == null || !entity.isValid() ? "removed" : (stale ? "stale" : "out_of_range"));
                 iterator.remove();
             }
         }

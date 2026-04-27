@@ -2,11 +2,13 @@ package io.github.ganyuke.peoplehunt.game.match;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
 import io.github.ganyuke.peoplehunt.report.ReportService;
+import io.github.ganyuke.peoplehunt.util.PrettyNames;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.damage.DamageSource;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
@@ -29,6 +31,15 @@ public final class AttributionManager {
     private final double explosionAttributionRadiusSquared;
     private final long explosionAttributionWindowMillis;
     private int tickCounter = 0;
+
+    public record DeathAttribution(
+            UUID killerUuid,
+            String killerName,
+            String killerEntityType,
+            String weapon,
+            UUID projectileUuid,
+            Location location
+    ) {}
 
     public AttributionManager(PeopleHuntConfig config, MatchManager matchManager, ReportService reportService) {
         this.matchManager = matchManager;
@@ -215,6 +226,37 @@ public final class AttributionManager {
         };
     }
 
+    public DeathAttribution resolveLivingEntityDeathAttribution(LivingEntity victim, DamageSource damageSource) {
+        MatchSession session = matchManager.getSession();
+        if (session == null || victim == null) {
+            return null;
+        }
+
+        Entity causingEntity = damageSource == null ? null : damageSource.getCausingEntity();
+        Entity directEntity = damageSource == null ? null : damageSource.getDirectEntity();
+
+        DeathAttribution fromEntities = resolveDeathAttribution(session, causingEntity, directEntity, victim.getLocation());
+        if (fromEntities != null) {
+            return fromEntities;
+        }
+
+        EntityDamageEvent lastDamage = victim.getLastDamageCause();
+        EntityDamageEvent.DamageCause cause = lastDamage == null ? null : lastDamage.getCause();
+        if (isLavaLike(cause)) {
+            MatchSession.Attribution lava = resolveLavaAttribution(session, victim.getLocation());
+            if (lava != null) {
+                return new DeathAttribution(lava.playerUuid(), lava.playerName(), lava.playerUuid() == null ? null : "PLAYER", lava.weapon(), lava.projectileUuid(), lava.location());
+            }
+        }
+        if (cause == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION || cause == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION) {
+            MatchSession.Attribution explosion = resolveExplosionAttribution(session, victim.getLocation());
+            if (explosion != null) {
+                return new DeathAttribution(explosion.playerUuid(), explosion.playerName(), explosion.playerUuid() == null ? null : "PLAYER", explosion.weapon(), explosion.projectileUuid(), explosion.location());
+            }
+        }
+        return null;
+    }
+
     private MatchSession.Attribution resolveEntityAttribution(MatchSession session, Entity damager) {
         if (damager instanceof Player player && matchManager.isParticipant(player.getUniqueId())) {
             return new MatchSession.Attribution(player.getUniqueId(), player.getName(), weaponName(player.getInventory().getItemInMainHand()), null, player.getLocation(), System.currentTimeMillis());
@@ -229,6 +271,86 @@ public final class AttributionManager {
             return new MatchSession.Attribution(player.getUniqueId(), player.getName(), "TNT", null, tnt.getLocation(), System.currentTimeMillis());
         }
         return null;
+    }
+
+    private DeathAttribution resolveDeathAttribution(MatchSession session, Entity causingEntity, Entity directEntity, Location fallbackLocation) {
+        if (causingEntity instanceof Player player) {
+            UUID projectileUuid = directEntity instanceof Projectile projectile ? projectile.getUniqueId() : null;
+            String weapon = projectileUuid == null ? weaponName(player.getInventory().getItemInMainHand()) : directEntity.getType().name();
+            MatchSession.ProjectileAttribution tracked = projectileUuid == null ? null : session.trackedProjectiles.get(projectileUuid);
+            if (tracked != null) {
+                weapon = tracked.weapon();
+            }
+            return new DeathAttribution(
+                    player.getUniqueId(),
+                    player.getName(),
+                    "PLAYER",
+                    weapon,
+                    projectileUuid,
+                    sourceLocation(causingEntity, directEntity, fallbackLocation)
+            );
+        }
+
+        if (causingEntity instanceof LivingEntity living) {
+            UUID projectileUuid = directEntity instanceof Projectile projectile ? projectile.getUniqueId() : null;
+            String weapon = projectileUuid == null ? living.getType().name() : directEntity.getType().name();
+            return new DeathAttribution(
+                    null,
+                    PrettyNames.enumName(living.getType().name()),
+                    living.getType().name(),
+                    weapon,
+                    projectileUuid,
+                    sourceLocation(causingEntity, directEntity, fallbackLocation)
+            );
+        }
+
+        if (directEntity instanceof TNTPrimed tnt && tnt.getSource() instanceof Player player) {
+            return new DeathAttribution(
+                    player.getUniqueId(),
+                    player.getName(),
+                    "PLAYER",
+                    "TNT",
+                    null,
+                    sourceLocation(player, directEntity, fallbackLocation)
+            );
+        }
+
+        if (directEntity instanceof Projectile projectile) {
+            MatchSession.ProjectileAttribution trackedPlayerProjectile = session.trackedProjectiles.get(projectile.getUniqueId());
+            if (trackedPlayerProjectile != null) {
+                return new DeathAttribution(
+                        trackedPlayerProjectile.playerUuid(),
+                        trackedPlayerProjectile.playerName(),
+                        trackedPlayerProjectile.playerUuid() == null ? null : "PLAYER",
+                        trackedPlayerProjectile.weapon(),
+                        projectile.getUniqueId(),
+                        sourceLocation(null, directEntity, fallbackLocation)
+                );
+            }
+            MatchSession.HostileProjectileAttribution trackedHostileProjectile = session.trackedHostileProjectiles.get(projectile.getUniqueId());
+            if (trackedHostileProjectile != null) {
+                return new DeathAttribution(
+                        null,
+                        PrettyNames.enumName(trackedHostileProjectile.shooterEntityType()),
+                        trackedHostileProjectile.shooterEntityType(),
+                        trackedHostileProjectile.weapon(),
+                        projectile.getUniqueId(),
+                        sourceLocation(null, directEntity, fallbackLocation)
+                );
+            }
+        }
+
+        return null;
+    }
+
+    private Location sourceLocation(Entity causingEntity, Entity directEntity, Location fallbackLocation) {
+        if (directEntity != null && directEntity.getWorld() != null) {
+            return directEntity.getLocation();
+        }
+        if (causingEntity != null && causingEntity.getWorld() != null) {
+            return causingEntity.getLocation();
+        }
+        return fallbackLocation;
     }
 
     private MatchSession.Attribution resolveBlockAttribution(MatchSession session, Block block, EntityDamageEvent.DamageCause cause, Location victimLocation) {

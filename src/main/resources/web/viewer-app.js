@@ -10,11 +10,13 @@ const ICON_KEYS = Object.keys(MC_ICONS);
 const MOB_COLOR = '#8b6f47';
 const DRAGON_COLOR = '#7c3aed';
 const END_CRYSTAL_COLOR = '#06b6d4';
+const PROJECTILE_MARKER_FADE_MILLIS = 8000;
 const DEFAULT_LAYERS = Object.freeze({
     players: true,
     projectiles: true,
     mobs: true,
     markers: true,
+    deaths: true,
     damage: true,
     dragon: true
 });
@@ -341,6 +343,7 @@ function availableWorld(snapshot) {
         ...(snapshot?.paths || []).map(point => point.world),
         ...(snapshot?.markers || []).map(marker => marker.world),
         ...(snapshot?.deaths || []).map(death => death.location?.world),
+        ...(snapshot?.mobDeaths || []).map(mobDeath => mobDeath.location?.world),
         ...(snapshot?.dragon || []).map(sample => sample.world),
         ...(snapshot?.endCrystals || []).map(crystal => crystal.world)
     ].filter(Boolean)));
@@ -441,6 +444,9 @@ function mapBounds(snapshot, selectedWorld) {
     (snapshot?.markers || []).forEach(marker => push(marker.x, marker.z, marker.world));
     (snapshot?.deaths || []).forEach(death => {
         if (death.location) push(death.location.x, death.location.z, death.location.world);
+    });
+    (snapshot?.mobDeaths || []).forEach(mobDeath => {
+        if (mobDeath.location) push(mobDeath.location.x, mobDeath.location.z, mobDeath.location.world);
     });
     (snapshot?.projectiles || []).forEach(projectile => {
         (projectile.points || []).forEach(point => push(point.x, point.z, point.world));
@@ -926,6 +932,27 @@ function buildUnifiedEvents(snapshot) {
         }));
     });
 
+    (snapshot?.mobDeaths || []).forEach((mobDeath, index) => {
+        const killerText = mobDeath.killerName || pretty(mobDeath.killerEntityType || 'environment');
+        pushEvent(store, createBaseEvent({
+            id: `mob-death-${index}`,
+            dedupeKey: `mob-death:${mobDeath.offsetMillis}:${mobDeath.entityUuid || mobDeath.entityType}:${mobDeath.cause}:${mobDeath.killerUuid || mobDeath.killerName || mobDeath.killerEntityType || ''}`,
+            offsetMillis: mobDeath.offsetMillis,
+            kind: 'death',
+            title: `${pretty(mobDeath.entityType)} died`,
+            description: `${pretty(mobDeath.cause)}${killerText ? ` · by ${killerText}` : ''}${mobDeath.weapon ? ` · ${pretty(mobDeath.weapon)}` : ''}${mobDeath.targetPlayerName ? ` · tracking ${mobDeath.targetPlayerName}` : ''}`,
+            playerUuid: mobDeath.targetPlayerUuid,
+            playerName: mobDeath.targetPlayerName,
+            subjectName: killerText,
+            colorHex: mobDeath.killerUuid ? playerColor(snapshot, mobDeath.killerUuid) : MOB_COLOR,
+            rawName: mobDeath.entityType,
+            iconToken: entityIconToken(mobDeath.entityType) || mobDeath.weapon || mobDeath.cause || 'death',
+            world: mobDeath.location?.world || null,
+            location: mobDeath.location || null,
+            sources: ['mobDeath']
+        }));
+    });
+
     (snapshot?.markers || []).forEach((marker, index) => {
         const kind = marker.kind === 'dimension_entry' ? 'portal' : marker.kind;
         pushEvent(store, createBaseEvent({
@@ -1028,7 +1055,7 @@ function buildUnifiedEvents(snapshot) {
 
     (snapshot?.timeline || []).forEach((entry, index) => {
         const value = String(entry.kind || '').toLowerCase();
-        if (['damage', 'death', 'projectile', 'food', 'effect', 'totem', 'shield'].includes(value)) return;
+        if (['damage', 'death', 'mob_death', 'projectile', 'food', 'effect', 'totem', 'shield'].includes(value)) return;
         const kind = value === 'health' ? 'progress' : value;
         let iconToken = entry.rawName || entry.kind;
         if (value === 'gamemode') iconToken = gamemodeIconToken(entry.rawName);
@@ -1056,12 +1083,14 @@ function buildUnifiedEvents(snapshot) {
     return Array.from(store.values()).sort((left, right) => left.offsetMillis - right.offsetMillis || left.title.localeCompare(right.title));
 }
 
-function markersFromEvents(events) {
-    return events.map(event => ({
-        t: event.offsetMillis,
-        kind: event.group,
-        title: event.title
-    }));
+function markersFromEvents(events, showDeaths = true) {
+    return events
+        .filter(event => showDeaths || event.kind !== 'death')
+        .map(event => ({
+            t: event.offsetMillis,
+            kind: event.kind === 'death' ? 'death' : event.group,
+            title: event.title
+        }));
 }
 
 function nearestEvent(events, time) {
@@ -1353,6 +1382,7 @@ function App() {
                 speed=${speed}
                 setSpeed=${setSpeed}
                 events=${events}
+                layers=${layers}
             />
             <${MapWidget}
                 snapshot=${snapshot}
@@ -1487,9 +1517,9 @@ function PlaybackControlsCard({ snapshot, selectedPlayer, setSelectedPlayer, sel
     </section>`;
 }
 
-function ScrubberCard({ time, duration, onSeek, playing, setPlaying, togglePlayback, speed, setSpeed, events }) {
+function ScrubberCard({ time, duration, onSeek, playing, setPlaying, togglePlayback, speed, setSpeed, events, layers }) {
     const [pinned, setPinned] = useState(false);
-    const markers = useMemo(() => markersFromEvents(events), [events]);
+    const markers = useMemo(() => markersFromEvents(events, layers?.deaths !== false), [events, layers]);
     const focused = nearestEvent(events, time);
     const prev = previousEventTime(events, time);
     const next = nextEventTime(events, time);
@@ -1648,9 +1678,16 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
                 const color = projectile.shooterUuid ? playerColor(snapshot, projectile.shooterUuid) : (projectile.kind === 'hostile' ? MOB_COLOR : '#475569');
                 drawPath(points, color, 1.75, [2, 4]);
                 const last = points[points.length - 1];
+                const fadeAlpha = projectile.endedAtOffsetMillis == null
+                    ? 1
+                    : clamp(1 - ((time - projectile.endedAtOffsetMillis) / PROJECTILE_MARKER_FADE_MILLIS), 0, 1);
+                if (fadeAlpha <= 0) return;
                 const target = toCanvas(last.x, last.z);
+                ctx.save();
+                ctx.globalAlpha = fadeAlpha;
                 ctx.fillStyle = color;
                 ctx.fillRect(target.x - 3, target.y - 3, 6, 6);
+                ctx.restore();
                 hits.push({
                     x: target.x,
                     y: target.y,
@@ -1666,9 +1703,15 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
 
         if (layers.mobs) {
             (snapshot.mobs || []).forEach(mob => {
-                const points = (mob.points || []).filter(point => point.offsetMillis <= time && accept(point.world));
+                const visibleUntil = Number.isFinite(mob.endedAtOffsetMillis)
+                    ? Math.min(time, mob.endedAtOffsetMillis)
+                    : time;
+                const points = (mob.points || []).filter(point => point.offsetMillis <= visibleUntil && accept(point.world));
                 if (!points.length) return;
                 drawPath(points, MOB_COLOR, 2, [6, 4]);
+                if (Number.isFinite(mob.endedAtOffsetMillis) && time > mob.endedAtOffsetMillis) {
+                    return;
+                }
                 const last = points[points.length - 1];
                 const target = toCanvas(last.x, last.z);
                 ctx.fillStyle = MOB_COLOR;
@@ -1741,26 +1784,28 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
             });
         }
 
-        (snapshot.deaths || []).filter(death => death.offsetMillis <= time && death.location && accept(death.location.world)).forEach(death => {
-            const target = toCanvas(death.location.x, death.location.z);
-            ctx.strokeStyle = '#dc2626';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(target.x - 8, target.y - 8);
-            ctx.lineTo(target.x + 8, target.y + 8);
-            ctx.moveTo(target.x + 8, target.y - 8);
-            ctx.lineTo(target.x - 8, target.y + 8);
-            ctx.stroke();
-            hits.push({
-                x: target.x,
-                y: target.y,
-                r: 12,
-                time: death.offsetMillis,
-                title: `${death.victimName} died`,
-                body: `${pretty(death.cause)}${death.killerName ? ` · ${death.killerName}` : ''}`,
-                kind: 'death'
+        if (layers.deaths) {
+            (snapshot.deaths || []).filter(death => death.offsetMillis <= time && death.location && accept(death.location.world)).forEach(death => {
+                const target = toCanvas(death.location.x, death.location.z);
+                ctx.strokeStyle = '#dc2626';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(target.x - 8, target.y - 8);
+                ctx.lineTo(target.x + 8, target.y + 8);
+                ctx.moveTo(target.x + 8, target.y - 8);
+                ctx.lineTo(target.x - 8, target.y + 8);
+                ctx.stroke();
+                hits.push({
+                    x: target.x,
+                    y: target.y,
+                    r: 12,
+                    time: death.offsetMillis,
+                    title: `${death.victimName} died`,
+                    body: `${pretty(death.cause)}${death.killerName ? ` · ${death.killerName}` : ''}`,
+                    kind: 'death'
+                });
             });
-        });
+        }
 
         if (layers.dragon) {
             const dragonPoints = (snapshot.dragon || []).filter(sample => sample.offsetMillis <= time && accept(sample.world));
