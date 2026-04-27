@@ -4,11 +4,15 @@ import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.ganyuke.peoplehunt.report.ReportModels.IndexEntry;
+import io.github.ganyuke.peoplehunt.util.HtmlUtil;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 public final class EmbeddedWebServer {
@@ -64,20 +68,78 @@ public final class EmbeddedWebServer {
             return;
         }
         List<IndexEntry> entries = reportService.listReports();
-        StringBuilder html = new StringBuilder("<!doctype html><html><head><meta charset='utf-8'><title>PeopleHunt reports</title>")
-                .append("<style>body{font-family:system-ui;background:#0f1720;color:#e6edf3;padding:24px}a{color:#7dd3fc}li{margin:10px 0}</style></head><body>")
-                .append("<h1>PeopleHunt reports</h1><ul>");
-        for (IndexEntry entry : entries) {
-            html.append("<li><a href='/report/").append(entry.reportId()).append("'>")
-                    .append(entry.reportId())
-                    .append("</a> — ")
-                    .append(entry.runnerName())
-                    .append(" — ")
-                    .append(entry.outcome())
-                    .append("</li>");
+        respond(exchange, 200, renderIndexHtml(entries), "text/html; charset=utf-8");
+    }
+
+    private String renderIndexHtml(List<IndexEntry> entries) {
+        String rows = entries.isEmpty()
+                ? "<tr class='empty-row'><td colspan='5'>No reports recorded yet.</td></tr>"
+                : entries.stream().map(this::renderIndexRow).reduce("", String::concat);
+
+        IndexEntry latest = entries.isEmpty() ? null : entries.getFirst();
+        long latestEndedAt = latest == null ? 0L : latest.endedAtEpochMillis();
+        String latestHref = latest == null ? "#" : HtmlUtil.escape("/report/" + latest.reportId());
+
+        long runnerWins = entries.stream().filter(entry -> "RUNNER_VICTORY".equalsIgnoreCase(entry.outcome())).count();
+        long hunterWins = entries.stream().filter(entry -> "HUNTER_VICTORY".equalsIgnoreCase(entry.outcome())).count();
+        long inconclusive = entries.stream().filter(entry -> "INCONCLUSIVE".equalsIgnoreCase(entry.outcome())).count();
+
+        Map<String, String> replacements = new LinkedHashMap<>();
+        replacements.put("__MATCH_COUNT__", Integer.toString(entries.size()));
+        replacements.put("__RUNNER_WINS__", Long.toString(runnerWins));
+        replacements.put("__HUNTER_WINS__", Long.toString(hunterWins));
+        replacements.put("__INCONCLUSIVE__", Long.toString(inconclusive));
+        replacements.put("__LATEST_ENDED_AT__", Long.toString(latestEndedAt));
+        replacements.put(
+                "__LATEST_ACTION__",
+                latest == null
+                        ? "<span class='open-btn' aria-disabled='true'>No reports yet</span>"
+                        : "<a class='open-btn' href='" + latestHref + "'>Open latest</a>"
+        );
+        replacements.put("__INDEX_ROWS__", rows);
+        return viewerAssets.renderIndex(replacements);
+    }
+
+    private String renderIndexRow(IndexEntry entry) {
+        long durationMillis = Math.max(0L, entry.endedAtEpochMillis() - entry.startedAtEpochMillis());
+        String href = HtmlUtil.escape("/report/" + entry.reportId());
+        String runnerToken = entry.runnerUuid() != null ? entry.runnerUuid().toString() : displayLiteralValue(entry.runnerName());
+        String runnerHeadUrl = "https://api.mineatar.io/face/" + HtmlUtil.escape(runnerToken) + "?scale=2";
+        String outcomeClass = outcomeClass(entry.outcome());
+        return """
+                <tr data-href='%s' data-outcome='%s' data-sort-date='%d' data-duration='%d' data-runner='%s'>
+                  <td class='col-runner'>
+                    <div class='runner-cell'>
+                      <img class='runner-head' src='%s' alt='' loading='lazy' referrerpolicy='no-referrer'>
+                      <span class='runner-name-text'>%s</span>
+                    </div>
+                  </td>
+                  <td class='col-outcome %s'>%s</td>
+                  <td class='col-time js-datetime' data-epoch='%d'>--</td>
+                  <td class='col-duration'>%s</td>
+                  <td class='col-action'><a class='open-btn' href='%s'>Open</a></td>
+                </tr>
+                """.formatted(
+                href,
+                HtmlUtil.escape(entry.outcome() == null ? "" : entry.outcome()),
+                entry.startedAtEpochMillis(),
+                durationMillis,
+                HtmlUtil.escape(sortableRunner(entry.runnerName())),
+                runnerHeadUrl,
+                HtmlUtil.escape(displayLiteralValue(entry.runnerName())),
+                outcomeClass,
+                HtmlUtil.escape(pretty(entry.outcome())),
+                entry.startedAtEpochMillis(),
+                HtmlUtil.escape(formatDuration(durationMillis)),
+                href
+        );
+    }
+
+    private static String sortableRunner(String value) {
+        if (value == null || value.isBlank()) {
+            return "~";
         }
-        html.append("</ul></body></html>");
-        respond(exchange, 200, html.toString(), "text/html; charset=utf-8");
+        return value.toLowerCase(Locale.ROOT);
     }
 
     private void handleReport(HttpExchange exchange) throws IOException {
@@ -118,6 +180,62 @@ public final class EmbeddedWebServer {
         } catch (IOException exception) {
             respond(exchange, 500, "Unable to read report: " + exception.getMessage(), "text/plain; charset=utf-8");
         }
+    }
+
+    private static String formatDuration(long durationMillis) {
+        long totalSeconds = Math.max(0L, durationMillis / 1000L);
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        if (hours > 0L) {
+            return "%dh %02dm %02ds".formatted(hours, minutes, seconds);
+        }
+        if (minutes > 0L) {
+            return "%dm %02ds".formatted(minutes, seconds);
+        }
+        return "%ds".formatted(seconds);
+    }
+
+    private static String displayLiteralValue(String value) {
+        return value == null || value.isBlank() ? "—" : value;
+    }
+
+    private static String pretty(String value) {
+        if (value == null || value.isBlank()) {
+            return "—";
+        }
+        String normalized = value
+                .replace("minecraft:", "")
+                .replace("entity.", "")
+                .replace('/', ' ')
+                .replace('_', ' ');
+        StringBuilder out = new StringBuilder(normalized.length());
+        boolean capitalizeNext = true;
+        for (int i = 0; i < normalized.length(); i++) {
+            char current = normalized.charAt(i);
+            if (Character.isWhitespace(current)) {
+                capitalizeNext = true;
+                out.append(current);
+                continue;
+            }
+            if (capitalizeNext) {
+                out.append(Character.toUpperCase(current));
+                capitalizeNext = false;
+            } else {
+                out.append(current);
+            }
+        }
+        return out.isEmpty() ? "—" : out.toString();
+    }
+
+    private static String outcomeClass(String outcome) {
+        if (outcome == null) return "unknown";
+        return switch (outcome.toUpperCase(Locale.ROOT)) {
+            case "RUNNER_VICTORY" -> "runner";
+            case "HUNTER_VICTORY" -> "hunter";
+            case "INCONCLUSIVE"   -> "draw";
+            default               -> "unknown";
+        };
     }
 
     private void respond(HttpExchange exchange, int status, String body, String contentType) throws IOException {

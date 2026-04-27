@@ -4,6 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PeopleHunt Report</title>
+  <script>
+    (() => {
+      const key = 'peoplehunt-theme';
+      let stored = null;
+      try {
+        stored = window.localStorage.getItem(key);
+      } catch (error) {
+        stored = null;
+      }
+      const theme = stored === 'light' || stored === 'dark'
+        ? stored
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
   <style>
 __INLINE_CSS__
   </style>

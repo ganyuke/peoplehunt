@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PeopleHunt Archive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+  <script>
+    (() => {
+      const key = 'peoplehunt-theme';
+      let stored = null;
+      try {
+        stored = window.localStorage.getItem(key);
+      } catch (error) {
+        stored = null;
+      }
+      const theme = stored === 'light' || stored === 'dark'
+        ? stored
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
+  <style>
+    :root {
+      --bg: #111417;
+      --surface: #171c21;
+      --surface-strong: #1f252c;
+      --surface-hover: #222a33;
+      --border: #2d3742;
+      --border-strong: #475363;
+      --text: #edf2f7;
+      --muted: #c0cad6;
+      --dim: #8290a0;
+      --accent: #7dd3fc;
+      --runner: #34d399;
+      --hunter: #f87171;
+      --draw: #fbbf24;
+      --mono: 'IBM Plex Mono', 'Courier New', monospace;
+      --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+      --shell-width: 1480px;
+    }
+
+    :root[data-theme='light'] {
+      --bg: #f1ede6;
+      --surface: #fbfaf7;
+      --surface-strong: #f2ede5;
+      --surface-hover: #ebe5dc;
+      --border: #c7bfb3;
+      --border-strong: #938b81;
+      --text: #15171a;
+      --muted: #4b5563;
+      --dim: #6b7280;
+      --accent: #0f766e;
+      --runner: #15803d;
+      --hunter: #b91c1c;
+      --draw: #b45309;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.5;
+      background: var(--bg);
+      color: var(--text);
+    }
+    a { color: inherit; text-decoration: none; }
+    button, select { font: inherit; }
+    button {
+      border: 1px solid var(--border-strong);
+      border-radius: 0;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .shell {
+      width: min(calc(100vw - 24px), var(--shell-width));
+      margin: 0 auto;
+      padding: 12px 0 28px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .masthead,
+    .summary,
+    .controls,
+    .table-wrap,
+    .footer {
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .masthead {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 12px;
+    }
+    .brand-stack {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .wordmark {
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .wordmark .accent { color: var(--accent); }
+    .masthead-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .meta-chip,
+    .theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 0 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .meta-chip {
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--surface-strong);
+    }
+    .theme-toggle:hover {
+      background: var(--surface-hover);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+    .summary-cell {
+      padding: 10px 12px;
+      border-right: 1px solid var(--border);
+      display: grid;
+      gap: 4px;
+      min-height: min-content;
+      align-content: start;
+    }
+    .summary-cell:last-child { border-right: 0; }
+    .summary-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .summary-value {
+      font-family: var(--mono);
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .summary-value.runner { color: var(--runner); }
+    .summary-value.hunter { color: var(--hunter); }
+    .summary-value.draw { color: var(--draw); }
+    .summary-value.latest {
+      font-size: 14px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      flex-wrap: wrap;
+    }
+    .controls-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .spacer { flex: 1 1 auto; }
+    .sort-select {
+      min-height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--border-strong);
+      border-radius: 0;
+      background: var(--surface);
+      color: var(--text);
+    }
+    .filter-group {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 0;
+    }
+    .filter-btn,
+    .open-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 0 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .filter-btn + .filter-btn { margin-left: -1px; }
+    .filter-btn:hover,
+    .open-btn:hover,
+    tbody tr:hover .open-btn {
+      color: var(--text);
+      border-color: var(--border-strong);
+      background: var(--surface-hover);
+    }
+    .filter-btn.active {
+      color: var(--text);
+      background: var(--surface-strong);
+      border-color: var(--border-strong);
+      position: relative;
+      z-index: 1;
+    }
+    .filter-btn.active.runner-f { color: var(--runner); border-color: var(--runner); }
+    .filter-btn.active.hunter-f { color: var(--hunter); border-color: var(--hunter); }
+    .filter-btn.active.draw-f { color: var(--draw); border-color: var(--draw); }
+
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 780px;
+    }
+    thead { background: var(--surface-strong); }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+    th {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      user-select: none;
+    }
+    th.sortable { cursor: pointer; }
+    th.sortable:hover,
+    th.sort-active { color: var(--accent); }
+    .sort-arrow {
+      display: inline-block;
+      margin-left: 4px;
+      opacity: 0.7;
+      font-style: normal;
+    }
+    tbody tr {
+      background: var(--surface);
+      cursor: pointer;
+    }
+    tbody tr:hover { background: var(--surface-hover); }
+    tbody tr.hidden-row { display: none; }
+    tbody tr:last-child td { border-bottom: 0; }
+    td.col-runner {
+      min-width: 220px;
+    }
+    .runner-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .runner-head {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+      display: block;
+      image-rendering: pixelated;
+      border: 1px solid var(--border-strong);
+      background: var(--surface-strong);
+    }
+    .runner-name-text {
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .col-outcome {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .col-outcome.runner { color: var(--runner); }
+    .col-outcome.hunter { color: var(--hunter); }
+    .col-outcome.draw { color: var(--draw); }
+    .col-outcome.unknown { color: var(--muted); }
+    .col-time,
+    .col-duration {
+      font-family: var(--mono);
+      color: var(--muted);
+    }
+    .col-action { text-align: right; }
+    .empty-row td {
+      padding: 32px 12px;
+      text-align: center;
+      font-family: var(--mono);
+      color: var(--muted);
+    }
+
+    .footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 8px 12px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 980px) {
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .summary-cell:nth-child(2n) { border-right: 0; }
+      .summary-cell:nth-child(n + 3) { border-top: 1px solid var(--border); }
+    }
+
+    @media (max-width: 720px) {
+      .shell { width: min(calc(100vw - 16px), var(--shell-width)); padding-top: 8px; }
+      .masthead { grid-template-columns: 1fr; }
+      .masthead-actions { justify-content: flex-start; }
+      .controls { align-items: stretch; }
+      .spacer { display: none; }
+      .summary { grid-template-columns: 1fr; }
+      .summary-cell { border-right: 0; border-top: 1px solid var(--border); }
+      .summary-cell:first-child { border-top: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div class="brand-stack">
+        <div class="wordmark">People<span class="accent">Hunt</span> Archive</div>
+      </div>
+      <div class="masthead-actions">
+        <div class="meta-chip js-now">--</div>
+        <button id="theme-toggle" class="theme-toggle" type="button">Toggle theme</button>
+      </div>
+    </header>
+
+    <section class="summary">
+      <div class="summary-cell">
+        <div class="summary-label">Matches</div>
+        <div class="summary-value">__MATCH_COUNT__</div>
+      </div>
+      <div class="summary-cell">
+        <div class="summary-label">Runner wins</div>
+        <div class="summary-value runner">__RUNNER_WINS__</div>
+      </div>
+      <div class="summary-cell">
+        <div class="summary-label">Hunter wins</div>
+        <div class="summary-value hunter">__HUNTER_WINS__</div>
+      </div>
+      <div class="summary-cell">
+        <div class="summary-label">Inconclusive</div>
+        <div class="summary-value draw">__INCONCLUSIVE__</div>
+      </div>
+      <div class="summary-cell">
+        <div class="summary-label">Latest</div>
+        <div class="summary-value latest js-datetime" data-epoch="__LATEST_ENDED_AT__">--</div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <span class="controls-label">Sort</span>
+      <select id="sort-select" class="sort-select">
+        <option value="date">Newest first</option>
+        <option value="duration">Longest first</option>
+        <option value="runner">Runner A-Z</option>
+      </select>
+      <div class="spacer"></div>
+      <span class="controls-label">Filter</span>
+      <div class="filter-group">
+        <button class="filter-btn active" data-filter="all" type="button">All</button>
+        <button class="filter-btn runner-f" data-filter="RUNNER_VICTORY" type="button">Runner</button>
+        <button class="filter-btn hunter-f" data-filter="HUNTER_VICTORY" type="button">Hunter</button>
+        <button class="filter-btn draw-f" data-filter="INCONCLUSIVE" type="button">Draw</button>
+      </div>
+      <div class="spacer"></div>
+      __LATEST_ACTION__
+    </section>
+
+    <section class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-col="runner">Runner <i class="sort-arrow">↕</i></th>
+            <th>Outcome</th>
+            <th class="sortable" data-col="date">Started <i class="sort-arrow">↕</i></th>
+            <th class="sortable" data-col="duration">Duration <i class="sort-arrow">↕</i></th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="report-tbody">
+          __INDEX_ROWS__
+        </tbody>
+      </table>
+    </section>
+
+    <footer class="footer">PeopleHunt match archive · <span id="timezone-label">All timestamps in your local time</span></footer>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const storageKey = 'peoplehunt-theme';
+      const sortSelect = document.getElementById('sort-select');
+      const tbody = document.getElementById('report-tbody');
+      const filterButtons = Array.from(document.querySelectorAll('.filter-btn'));
+      const sortableHeaders = Array.from(document.querySelectorAll('th.sortable'));
+      const nowEl = document.querySelector('.js-now');
+      const themeButton = document.getElementById('theme-toggle');
+      const timezoneLabel = document.getElementById('timezone-label');
+      const rows = () => Array.from(tbody.querySelectorAll('tr[data-href]'));
+      let currentFilter = 'all';
+      let currentSort = 'date';
+      const sortDirection = { date: -1, duration: -1, runner: 1 };
+
+      const themeLabel = theme => theme === 'light' ? 'Dark mode' : 'Light mode';
+      const applyTheme = theme => {
+        root.dataset.theme = theme;
+        root.style.colorScheme = theme;
+        try {
+          window.localStorage.setItem(storageKey, theme);
+        } catch (error) {
+          // Theme persistence is optional in restricted browser contexts.
+        }
+        if (themeButton) themeButton.textContent = themeLabel(theme);
+      };
+
+      if (themeButton) {
+        themeButton.textContent = themeLabel(root.dataset.theme || 'dark');
+        themeButton.addEventListener('click', () => {
+          applyTheme((root.dataset.theme || 'dark') === 'light' ? 'dark' : 'light');
+        });
+      }
+
+      const formatDateTime = epoch => {
+        const value = Number(epoch);
+        if (!Number.isFinite(value) || value <= 0) return '--';
+        return new Date(value).toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      };
+
+      const resolvedTimeZone = () => {
+        try {
+          return Intl.DateTimeFormat().resolvedOptions().timeZone || 'your local time';
+        } catch (error) {
+          return 'your local time';
+        }
+      };
+
+      const formatNow = () => new Date().toLocaleString(undefined, {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      document.querySelectorAll('.js-datetime').forEach(element => {
+        element.textContent = formatDateTime(element.dataset.epoch);
+      });
+      if (timezoneLabel) {
+        timezoneLabel.textContent = `All timestamps in ${resolvedTimeZone()}`;
+      }
+      if (nowEl) {
+        nowEl.textContent = formatNow();
+        window.setInterval(() => {
+          nowEl.textContent = formatNow();
+        }, 30000);
+      }
+
+      document.querySelectorAll('tr[data-href]').forEach(row => {
+        row.addEventListener('click', event => {
+          if (event.target.closest('a')) return;
+          window.location.href = row.dataset.href;
+        });
+      });
+
+      const applyFilter = () => {
+        rows().forEach(row => {
+          const outcome = row.dataset.outcome || '';
+          row.classList.toggle('hidden-row', currentFilter !== 'all' && outcome !== currentFilter);
+        });
+      };
+
+      const applySort = () => {
+        const direction = sortDirection[currentSort] || 1;
+        const sortedRows = rows().sort((left, right) => {
+          if (currentSort === 'date') {
+            return direction * (Number(right.dataset.sortDate) - Number(left.dataset.sortDate));
+          }
+          if (currentSort === 'duration') {
+            return direction * (Number(right.dataset.duration) - Number(left.dataset.duration));
+          }
+          if (currentSort === 'runner') {
+            return direction * String(left.dataset.runner || '').localeCompare(String(right.dataset.runner || ''));
+          }
+          return 0;
+        });
+        sortedRows.forEach(row => tbody.appendChild(row));
+        sortableHeaders.forEach(header => {
+          const active = header.dataset.col === currentSort;
+          header.classList.toggle('sort-active', active);
+          const arrow = header.querySelector('.sort-arrow');
+          if (arrow) {
+            arrow.textContent = active ? (direction === 1 ? '↑' : '↓') : '↕';
+          }
+        });
+        sortSelect.value = currentSort;
+      };
+
+      sortSelect.addEventListener('change', () => {
+        currentSort = sortSelect.value;
+        applySort();
+      });
+
+      filterButtons.forEach(button => {
+        button.addEventListener('click', () => {
+          currentFilter = button.dataset.filter;
+          filterButtons.forEach(entry => entry.classList.remove('active'));
+          button.classList.add('active');
+          applyFilter();
+        });
+      });
+
+      sortableHeaders.forEach(header => {
+        header.addEventListener('click', () => {
+          const column = header.dataset.col;
+          if (column === currentSort) {
+            sortDirection[column] = -sortDirection[column];
+          } else {
+            currentSort = column;
+          }
+          applySort();
+        });
+      });
+
+      applySort();
+      applyFilter();
+    })();
+  </script>
+</body>
+</html>

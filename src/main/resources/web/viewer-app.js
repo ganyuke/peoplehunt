@@ -18,6 +18,33 @@ const DEFAULT_LAYERS = Object.freeze({
     dragon: true
 });
 
+const THEME_STORAGE_KEY = 'peoplehunt-theme';
+
+function readThemePreference() {
+    const active = document.documentElement.dataset.theme;
+    if (active === 'light' || active === 'dark') return active;
+    try {
+        const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+        if (stored === 'light' || stored === 'dark') return stored;
+    } catch (error) {
+        // localStorage can be unavailable in hardened browser contexts.
+    }
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+function applyThemePreference(theme) {
+    const next = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    document.documentElement.style.colorScheme = next;
+    try {
+        window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch (error) {
+        // Persisting theme is optional; rendering should continue without it.
+    }
+    return next;
+}
+
+
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
@@ -28,6 +55,17 @@ function formatTime(ms) {
     const min = Math.floor(totalSec / 60);
     const sec = totalSec % 60;
     return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+function formatMatchDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) ms = 0;
+    const totalSec = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSec / 3600);
+    const minutes = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
+    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
+    if (minutes > 0) return `${minutes}m ${String(sec).padStart(2, '0')}s`;
+    return `${sec}s`;
 }
 
 function pretty(raw) {
@@ -1022,6 +1060,7 @@ function useResizeBox(ref) {
 }
 
 function App() {
+    const [theme, setTheme] = useState(readThemePreference);
     const [snapshot, setSnapshot] = useState(initialSnapshot);
     const [loading, setLoading] = useState(!initialSnapshot && !!REPORT_ID && REPORT_ID !== 'LOCAL_EXPORT');
     const [loadError, setLoadError] = useState(null);
@@ -1034,6 +1073,11 @@ function App() {
     const [layers, setLayers] = useState(DEFAULT_LAYERS);
     const [selectedEventId, setSelectedEventId] = useState(null);
     const lastFrameTime = useRef(performance.now());
+
+    useEffect(() => {
+        applyThemePreference(theme);
+    }, [theme]);
+
 
     const togglePlayback = () => {
         if (playing) {
@@ -1127,12 +1171,20 @@ function App() {
     }, [selectedPoint, selectedWorld, snapshot]);
 
     if (!snapshot) {
-        if (loading) return html`<div class="shell"><div class="card empty">Loading report data...</div></div>`;
-        return html`<div class="shell"><div class="card empty">${loadError || 'No report data available.'}${REPORT_ID ? html`<div class="muted">Report ID: ${REPORT_ID}</div>` : null}</div></div>`;
+        if (loading) return html`<div class="shell"><div class="viewer-toolbar"><a class="toolbar-link" href="/">Archive</a><div class="toolbar-spacer"></div><button class="theme-toggle-btn ${theme === 'light' ? 'active' : ''}" onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button></div><div class="card empty">Loading report data...</div></div>`;
+        return html`<div class="shell"><div class="viewer-toolbar"><a class="toolbar-link" href="/">Archive</a><div class="toolbar-spacer"></div><button class="theme-toggle-btn ${theme === 'light' ? 'active' : ''}" onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button></div><div class="card empty">${loadError || 'No report data available.'}${REPORT_ID ? html`<div class="muted">Report ID: ${REPORT_ID}</div>` : null}</div></div>`;
     }
 
     return html`
         <div class="shell">
+            <div class="viewer-toolbar">
+                <a class="toolbar-link" href="/">Archive</a>
+                <div class="toolbar-chip">${displayMatchValue(snapshot.metadata.runnerName, 'Unknown')}</div>
+                <div class="toolbar-chip">${pretty(snapshot.metadata.outcome)}</div>
+                ${REPORT_ID && REPORT_ID !== 'LOCAL_EXPORT' ? html`<div class="toolbar-chip">Report ${REPORT_ID.slice(0, 8)}</div>` : null}
+                <div class="toolbar-spacer"></div>
+                <button class=${`theme-toggle-btn ${theme === 'light' ? 'active' : ''}`} onClick=${() => setTheme(current => current === 'light' ? 'dark' : 'light')}>${theme === 'light' ? 'Dark mode' : 'Light mode'}</button>
+            </div>
             <${MatchInfoCard} meta=${snapshot.metadata} duration=${duration} />
             <${PlaybackControlsCard}
                 snapshot=${snapshot}
@@ -1168,6 +1220,7 @@ function App() {
                 layers=${layers}
                 selectedEvent=${selectedEvent}
                 setSelectedEventId=${setSelectedEventId}
+                theme=${theme}
             />
             <${TimelineWidget}
                 snapshot=${snapshot}
@@ -1204,7 +1257,7 @@ function MatchInfoCard({ meta, duration }) {
     const rows = [
         ['Runner', displayMatchValue(meta.runnerName, 'Unknown')],
         ['Outcome', pretty(meta.outcome)],
-        ['Duration', formatTime(duration)],
+        ['Duration', formatMatchDuration(duration)],
         ['Started', new Date(meta.startedAtEpochMillis).toLocaleString()],
         ['Ended', new Date(meta.endedAtEpochMillis).toLocaleString()],
         ['Selected Kit', displayMatchValue(meta.activeKitId)],
@@ -1241,7 +1294,7 @@ function PlaybackControlsCard({ snapshot, selectedPlayer, setSelectedPlayer, sel
                         const currentStats = currentParticipantStats(snapshot, participant.uuid, time);
                         return html`<button
                             class=${`player-pill ${active ? 'active' : ''}`}
-                            style=${`background:${active ? rgba(participant.colorHex, 0.14) : '#fff'}; border-color:${active ? participant.colorHex : '#1f2937'};`}
+                            style=${`background:${active ? rgba(participant.colorHex, 0.14) : ''}; border-color:${active ? participant.colorHex : ''};`}
                             onClick=${() => setSelectedPlayer(participant.uuid)}>
                             <span class="left player-pill-main">
                                 <${PlayerHead} participant=${participant} />
@@ -1347,7 +1400,7 @@ function ScrubberCard({ time, duration, onSeek, playing, setPlaying, togglePlayb
     </section>`;
 }
 
-function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, layers, selectedEvent, setSelectedEventId }) {
+function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, layers, selectedEvent, setSelectedEventId, theme }) {
     const canvasRef = useRef(null);
     const wrapRef = useRef(null);
     const hitRef = useRef([]);
@@ -1364,10 +1417,10 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
         canvas.width = Math.floor(width * ratio);
         canvas.height = Math.floor(height * ratio);
         const ctx = canvas.getContext('2d');
+        const rootStyle = window.getComputedStyle(document.documentElement);
+        const mapGrid = rootStyle.getPropertyValue('--map-grid').trim() || 'rgba(214, 222, 232, 0.18)';
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
         ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = '#f8fafc';
-        ctx.fillRect(0, 0, width, height);
 
         const scaleX = width / Math.max(1, bounds.maxX - bounds.minX);
         const scaleZ = height / Math.max(1, bounds.maxZ - bounds.minZ);
@@ -1381,7 +1434,7 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
         const accept = world => selectedWorld === 'ALL' || !world || world === selectedWorld;
         const hits = [];
 
-        ctx.strokeStyle = 'rgba(15, 23, 42, 0.08)';
+        ctx.strokeStyle = mapGrid;
         ctx.lineWidth = 1;
         ctx.beginPath();
         for (let x = 0; x < width; x += 32) {
@@ -1428,7 +1481,7 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
                 const size = uuid === selectedPlayer ? 10 : 8;
                 ctx.fillStyle = color;
                 ctx.fillRect(marker.x - (size / 2), marker.y - (size / 2), size, size);
-                ctx.strokeStyle = '#ffffff';
+                ctx.strokeStyle = '#0d0f11';
                 ctx.lineWidth = 1;
                 ctx.strokeRect(marker.x - (size / 2), marker.y - (size / 2), size, size);
                 hits.push({
@@ -1529,7 +1582,7 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
                         : marker.colorHex || '#2563eb';
                 ctx.fillStyle = color;
                 ctx.fillRect(target.x - 6, target.y - 6, 12, 12);
-                ctx.strokeStyle = '#fff';
+                ctx.strokeStyle = '#0d0f11';
                 ctx.lineWidth = 1;
                 ctx.strokeRect(target.x - 6, target.y - 6, 12, 12);
                 hits.push({
@@ -1616,7 +1669,7 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
         }
 
         hitRef.current = hits;
-    }, [snapshot, time, selectedWorld, selectedPlayer, layers, selectedEvent, bounds, box]);
+    }, [snapshot, time, selectedWorld, selectedPlayer, layers, selectedEvent, bounds, box, theme]);
 
     const onMouseMove = event => {
         const rect = event.currentTarget.getBoundingClientRect();
