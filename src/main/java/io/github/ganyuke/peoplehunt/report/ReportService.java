@@ -5,6 +5,7 @@ import com.google.gson.reflect.TypeToken;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
 import io.github.ganyuke.peoplehunt.game.match.MatchOutcome;
 import io.github.ganyuke.peoplehunt.report.ReportModels.*;
+import io.github.ganyuke.peoplehunt.util.ExceptionUtil;
 import io.github.ganyuke.peoplehunt.util.HtmlUtil;
 import io.github.ganyuke.peoplehunt.util.LocationUtil;
 import io.github.ganyuke.peoplehunt.util.PrettyNames;
@@ -36,10 +37,18 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import net.kyori.adventure.text.Component;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.plugin.java.JavaPlugin;
 
 public final class ReportService {
     private static final Object SQLITE_DRIVER_LOCK = new Object();
@@ -49,6 +58,7 @@ public final class ReportService {
             "#ff595e", "#8338ec", "#3a86ff", "#ffbe0b"
     };
 
+    private final JavaPlugin plugin;
     private final Path reportsDirectory;
     private final Gson gson;
     private final Logger logger;
@@ -56,20 +66,62 @@ public final class ReportService {
     private final int pathFlushMaxBufferedPoints;
     private final long pathFlushMaxBufferedMillis;
     private final List<IndexEntry> indexEntries = new ArrayList<>();
+    private final ExecutorService writeExecutor;
+    private final ExecutorService backgroundExecutor;
     private Consumer<String> runtimeWarningSink = ignored -> {};
     private CurrentSession currentSession;
 
-    public ReportService(Path reportsDirectory, Gson gson, Logger logger, int pathFlushMaxBufferedPoints, long pathFlushMaxBufferedMillis) {
+    public ReportService(JavaPlugin plugin, Path reportsDirectory, Gson gson, Logger logger, int pathFlushMaxBufferedPoints, long pathFlushMaxBufferedMillis) {
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.reportsDirectory = reportsDirectory;
         this.gson = gson;
         this.logger = Objects.requireNonNull(logger, "logger");
         this.indexFile = reportsDirectory.resolve("index.json");
         this.pathFlushMaxBufferedPoints = Math.max(1, pathFlushMaxBufferedPoints);
         this.pathFlushMaxBufferedMillis = Math.max(1000L, pathFlushMaxBufferedMillis);
+        this.writeExecutor = Executors.newSingleThreadExecutor(namedThreadFactory("PeopleHunt-Report-Writer"));
+        this.backgroundExecutor = Executors.newSingleThreadExecutor(namedThreadFactory("PeopleHunt-Report-Background"));
+    }
+
+    public void shutdown() {
+        shutdownExecutor(backgroundExecutor, "report background executor");
+        shutdownExecutor(writeExecutor, "report writer executor");
     }
 
     public void setRuntimeWarningSink(Consumer<String> runtimeWarningSink) {
         this.runtimeWarningSink = runtimeWarningSink == null ? ignored -> {} : runtimeWarningSink;
+    }
+
+    private static ThreadFactory namedThreadFactory(String name) {
+        return runnable -> {
+            Thread thread = new Thread(runnable, name);
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private void shutdownExecutor(ExecutorService executor, String description) {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            logger.log(Level.WARNING, "Interrupted while shutting down " + description + '.', exception);
+            executor.shutdownNow();
+        }
+    }
+
+    private void runOnMainThread(Runnable action) {
+        if (!plugin.isEnabled()) {
+            return;
+        }
+        if (Bukkit.isPrimaryThread()) {
+            action.run();
+            return;
+        }
+        Bukkit.getScheduler().runTask(plugin, action);
     }
 
     public void verifySqliteRuntime() throws IOException {
@@ -170,6 +222,9 @@ public final class ReportService {
             String activeKitId,
             Collection<ParticipantSeed> participants
     ) throws IOException {
+        if (currentSession != null) {
+            throw new IllegalStateException("A previous report session is still active or finalizing.");
+        }
         UUID reportId = UUID.randomUUID();
         Path reportDirectory = reportsDirectory.resolve(reportId.toString());
         Path sqliteFile = reportDirectory.resolve("report.db");
@@ -211,59 +266,79 @@ public final class ReportService {
         return reportId;
     }
 
-    public Optional<ManualFlushResult> flushActiveReportPathsManually() throws IOException {
+    public boolean flushActiveReportPathsManuallyAsync(Consumer<ManualFlushResult> onSuccess, Consumer<IOException> onFailure) {
         CurrentSession session = currentSession;
-        if (session == null) {
-            return Optional.empty();
+        if (session == null || session.finalizationInProgress) {
+            return false;
         }
 
-        int bufferedBefore = session.pendingPaths.size();
+        List<PathPoint> batch = drainPendingPaths(session);
+        int bufferedBefore = batch.size();
         boolean wasSuspended = session.autoFlushSuspended;
-        boolean recreatedMissingDatabase = false;
-        boolean reportMayBeIncomplete = false;
+        boolean recreatedMissingDatabase = !Files.exists(session.sqliteFile);
+        if (bufferedBefore == 0 && !recreatedMissingDatabase) {
+            runOnMainThread(() -> onSuccess.accept(new ManualFlushResult(
+                    session.reportId,
+                    0,
+                    session.pendingPaths.size(),
+                    false,
+                    false,
+                    wasSuspended && !session.autoFlushSuspended
+            )));
+            return true;
+        }
 
-        try {
-            if (!Files.exists(session.sqliteFile)) {
-                initializeSqliteReport(session.sqliteFile);
-                session.lastInventoryByLife.clear();
-                session.lastPathFlushAtEpochMillis = System.currentTimeMillis();
-                recreatedMissingDatabase = true;
-                reportMayBeIncomplete = true;
-                warnRuntime(
-                        "PeopleHunt reporting warning: the active report database for " + session.reportId
-                                + " was missing during a manual flush attempt. A new staging database was created, so this report may be incomplete.",
-                        new IOException("Active report database was missing and had to be recreated")
-                );
-                if (bufferedBefore == 0) {
+        session.lastPathFlushAtEpochMillis = System.currentTimeMillis();
+        writeExecutor.execute(() -> {
+            try {
+                boolean reportMayBeIncomplete = false;
+                if (recreatedMissingDatabase) {
+                    initializeSqliteReport(session.sqliteFile);
+                    session.writerState.lastInventoryByLife.clear();
+                    reportMayBeIncomplete = true;
+                    warnRuntime(
+                            "PeopleHunt reporting warning: the active report database for " + session.reportId
+                                    + " was missing during a manual flush attempt. A new staging database was created, so this report may be incomplete.",
+                            new IOException("Active report database was missing and had to be recreated")
+                    );
+                }
+                if (!batch.isEmpty()) {
+                    writePathBatchToSqlite(session, batch, false, false);
+                } else {
                     session.autoFlushSuspended = false;
                 }
+                boolean finalReportMayBeIncomplete = reportMayBeIncomplete;
+                runOnMainThread(() -> onSuccess.accept(new ManualFlushResult(
+                        session.reportId,
+                        batch.size(),
+                        session.pendingPaths.size(),
+                        recreatedMissingDatabase,
+                        finalReportMayBeIncomplete,
+                        wasSuspended && !session.autoFlushSuspended
+                )));
+            } catch (IOException exception) {
+                session.autoFlushSuspended = true;
+                warnRuntime(
+                        "PeopleHunt reporting warning: a manual report flush failed for report " + session.reportId
+                                + ". Automatic path flushing remains suspended until storage is working again.",
+                        exception
+                );
+                runOnMainThread(() -> onFailure.accept(exception));
             }
+        });
+        return true;
+    }
 
-            if (bufferedBefore > 0) {
-                flushPendingPaths(session, false);
-            }
-        } catch (IOException exception) {
-            session.autoFlushSuspended = true;
-            warnRuntime(
-                    "PeopleHunt reporting warning: a manual report flush failed for report " + session.reportId
-                            + ". Automatic path flushing remains suspended until storage is working again.",
-                    exception
-            );
-            throw exception;
-        }
-
-        return Optional.of(new ManualFlushResult(
-                session.reportId,
-                bufferedBefore - session.pendingPaths.size(),
-                session.pendingPaths.size(),
-                recreatedMissingDatabase,
-                reportMayBeIncomplete,
-                wasSuspended && !session.autoFlushSuspended
-        ));
+    public UUID activeReportId() {
+        return currentSession == null ? null : currentSession.reportId;
     }
 
     public boolean isRunning() {
-        return currentSession != null;
+        return currentSession != null && !currentSession.finalizationInProgress;
+    }
+
+    public boolean isFinalizationInProgress() {
+        return currentSession != null && currentSession.finalizationInProgress;
     }
 
     public String colorOfParticipant(UUID uuid) {
@@ -858,15 +933,74 @@ public final class ReportService {
         return new LinkedHashSet<>(currentSession.projectiles.keySet());
     }
 
-    public synchronized Optional<FinishResult> finish(MatchOutcome outcome) throws IOException {
-        if (currentSession == null) {
+    public boolean finishAsync(MatchOutcome outcome, Consumer<Optional<FinishResult>> onSuccess, Consumer<IOException> onFailure) {
+        CurrentSession session = currentSession;
+        if (session == null) {
+            runOnMainThread(() -> onSuccess.accept(Optional.empty()));
+            return true;
+        }
+        if (session.finalizationInProgress) {
+            return false;
+        }
+        session.finalizationInProgress = true;
+        session.autoFlushSuspended = false;
+        long endedAt = System.currentTimeMillis();
+        List<PathPoint> finalBatch = drainPendingPaths(session);
+        ViewerSnapshot snapshot = buildFrozenSnapshot(session, endedAt, outcome);
+        writeExecutor.execute(() -> {
+            try {
+                FinishResult result = finalizeSessionOnWriteThread(session, outcome, endedAt, snapshot, finalBatch);
+                runOnMainThread(() -> {
+                    if (currentSession == session) {
+                        currentSession = null;
+                    }
+                    onSuccess.accept(Optional.of(result));
+                });
+            } catch (IOException exception) {
+                session.finalizationInProgress = false;
+                logger.log(Level.SEVERE, "Failed to finalize report " + session.reportId + '.', exception);
+                runOnMainThread(() -> onFailure.accept(exception));
+            }
+        });
+        return true;
+    }
+
+    public Optional<FinishResult> finishBlocking(MatchOutcome outcome) throws IOException {
+        CurrentSession session = currentSession;
+        if (session == null) {
             return Optional.empty();
         }
-        CurrentSession session = currentSession;
-        long endedAt = System.currentTimeMillis();
+        if (session.finalizationInProgress) {
+            throw new IOException("Report finalization is already in progress.");
+        }
+        session.finalizationInProgress = true;
         session.autoFlushSuspended = false;
-        flushPendingPaths(session, true);
-        ViewerSnapshot snapshot = new ViewerSnapshot(
+        long endedAt = System.currentTimeMillis();
+        List<PathPoint> finalBatch = drainPendingPaths(session);
+        ViewerSnapshot snapshot = buildFrozenSnapshot(session, endedAt, outcome);
+        Future<FinishResult> future = writeExecutor.submit(() -> finalizeSessionOnWriteThread(session, outcome, endedAt, snapshot, finalBatch));
+        try {
+            FinishResult result = future.get();
+            if (currentSession == session) {
+                currentSession = null;
+            }
+            return Optional.of(result);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            session.finalizationInProgress = false;
+            throw new IOException("Interrupted while finalizing the report", exception);
+        } catch (Exception exception) {
+            session.finalizationInProgress = false;
+            Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            throw new IOException("Unable to finalize the report", cause);
+        }
+    }
+
+    private ViewerSnapshot buildFrozenSnapshot(CurrentSession session, long endedAt, MatchOutcome outcome) {
+        return new ViewerSnapshot(
                 new SessionMetadata(
                         session.reportId,
                         session.runnerUuid,
@@ -896,6 +1030,21 @@ public final class ReportService {
                 List.copyOf(session.blocks),
                 List.copyOf(session.timeline)
         );
+    }
+
+    private FinishResult finalizeSessionOnWriteThread(CurrentSession session, MatchOutcome outcome, long endedAt, ViewerSnapshot snapshot, List<PathPoint> finalBatch) throws IOException {
+        if (!Files.exists(session.sqliteFile)) {
+            initializeSqliteReport(session.sqliteFile);
+            session.writerState.lastInventoryByLife.clear();
+            warnRuntime(
+                    "PeopleHunt reporting warning: the active report database for " + session.reportId
+                            + " was missing during report finalization. A new staging database was created, so this report may be incomplete.",
+                    new IOException("Active report database was missing and had to be recreated before finalization")
+            );
+        }
+        if (!finalBatch.isEmpty()) {
+            writePathBatchToSqlite(session, finalBatch, true, false);
+        }
         logger.info("Finalizing report in " + session.sqliteFile);
         finalizeSqliteReport(session.sqliteFile, snapshot);
         logger.info("Finished writing report to " + session.sqliteFile);
@@ -907,17 +1056,18 @@ public final class ReportService {
                 session.runnerUuid,
                 session.runnerName
         );
-        indexEntries.removeIf(entry -> entry.reportId().equals(indexEntry.reportId()));
-        indexEntries.add(indexEntry);
-        indexEntries.sort(Comparator.comparingLong(IndexEntry::endedAtEpochMillis).reversed());
-        saveIndex();
+        synchronized (this) {
+            indexEntries.removeIf(entry -> entry.reportId().equals(indexEntry.reportId()));
+            indexEntries.add(indexEntry);
+            indexEntries.sort(Comparator.comparingLong(IndexEntry::endedAtEpochMillis).reversed());
+            saveIndex();
+        }
         ViewerSnapshot finishedSnapshot = readFromSqlite(session.sqliteFile);
-        currentSession = null;
-        return Optional.of(new FinishResult(indexEntry, finishedSnapshot));
+        return new FinishResult(indexEntry, finishedSnapshot);
     }
 
     private void maybeFlushPendingPaths(CurrentSession session) {
-        if (session == null || session.pendingPaths.isEmpty() || session.autoFlushSuspended) {
+        if (session == null || session.pendingPaths.isEmpty() || session.autoFlushSuspended || session.finalizationInProgress) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -926,29 +1076,50 @@ public final class ReportService {
         if (!flushByCount && !flushByAge) {
             return;
         }
-        try {
-            flushPendingPaths(session, false);
-        } catch (IOException exception) {
-            session.autoFlushSuspended = true;
-            warnRuntime(
-                    "PeopleHunt reporting warning: live path flushing failed for report " + session.reportId
-                            + ". The match will continue, but report path data is now buffering in memory until finalization. See console.",
-                    exception
-            );
-        }
-    }
-
-    private void flushPendingPaths(CurrentSession session, boolean finalFlush) throws IOException {
-        if (session == null || session.pendingPaths.isEmpty()) {
+        List<PathPoint> batch = drainPendingPaths(session);
+        if (batch.isEmpty()) {
             return;
         }
+        session.lastPathFlushAtEpochMillis = now;
+        writeExecutor.execute(() -> {
+            try {
+                writePathBatchToSqlite(session, batch, false, false);
+            } catch (IOException exception) {
+                session.autoFlushSuspended = true;
+                warnRuntime(
+                        "PeopleHunt reporting warning: live path flushing failed for report " + session.reportId
+                                + ". The match will continue, but report path data is now buffering in memory until finalization. See console.",
+                        exception
+                );
+            }
+        });
+    }
+
+    private List<PathPoint> drainPendingPaths(CurrentSession session) {
+        if (session == null || session.pendingPaths.isEmpty()) {
+            return List.of();
+        }
         List<PathPoint> batch = List.copyOf(session.pendingPaths);
+        session.pendingPaths.clear();
+        return batch;
+    }
+
+    private void writePathBatchToSqlite(CurrentSession session, List<PathPoint> batch, boolean finalFlush, boolean recreateIfMissing) throws IOException {
+        if (session == null || batch.isEmpty()) {
+            if (session != null) {
+                session.autoFlushSuspended = false;
+            }
+            return;
+        }
+        if (recreateIfMissing && !Files.exists(session.sqliteFile)) {
+            initializeSqliteReport(session.sqliteFile);
+            session.writerState.lastInventoryByLife.clear();
+        }
         try (Connection connection = openSqliteConnection(session.sqliteFile)) {
             connection.setAutoCommit(false);
             try {
-                writePathBatch(connection, batch, session.lastInventoryByLife);
+                writePathBatch(connection, batch, session.writerState.lastInventoryByLife);
                 connection.commit();
-                session.pendingPaths.clear();
                 session.lastPathFlushAtEpochMillis = System.currentTimeMillis();
                 session.autoFlushSuspended = false;
             } catch (Exception exception) {
@@ -963,8 +1134,11 @@ public final class ReportService {
     }
 
     private void warnRuntime(String message, Exception exception) {
-        logger.severe(message + " (" + exception.getMessage() + ")");
-        runtimeWarningSink.accept(message);
+        String operatorMessage = message.contains(" See console.")
+                ? message.replace(" See console.", " Cause: " + ExceptionUtil.summarize(exception) + ". See console.")
+                : message + " Cause: " + ExceptionUtil.summarize(exception) + ". See console.";
+        logger.log(Level.SEVERE, message + " Cause: " + ExceptionUtil.summarize(exception), exception);
+        runOnMainThread(() -> runtimeWarningSink.accept(operatorMessage));
     }
 
     private void rollbackQuietly(Connection connection, Exception primary) {
@@ -1012,6 +1186,23 @@ public final class ReportService {
         deleteRecursively(exportDir);
         logger.info("Exported report " + reportId + " to " + zipFile);
         return zipFile;
+    }
+
+    public void exportAsync(UUID reportId, ViewerAssets viewerAssets, Consumer<Path> onSuccess, Consumer<IOException> onFailure) {
+        backgroundExecutor.execute(() -> {
+            try {
+                ViewerSnapshot snapshot = readSnapshot(reportId);
+                String viewerHtml = viewerAssets.render("LOCAL_EXPORT", toJson(snapshot));
+                Path export = export(reportId, viewerHtml);
+                runOnMainThread(() -> onSuccess.accept(export));
+            } catch (IOException exception) {
+                logger.log(Level.SEVERE, "Failed to export report " + reportId + '.', exception);
+                runOnMainThread(() -> onFailure.accept(exception));
+            } catch (RuntimeException exception) {
+                logger.log(Level.SEVERE, "Failed to render export viewer for report " + reportId + '.', exception);
+                runOnMainThread(() -> onFailure.accept(new IOException("Unable to render export viewer", exception)));
+            }
+        });
     }
 
     public synchronized String toJson(ViewerSnapshot snapshot) {
@@ -2294,9 +2485,10 @@ public final class ReportService {
         private final List<DamageRecord> damage = new ArrayList<>();
         private final List<DeathRecord> deaths = new ArrayList<>();
         private final List<PathPoint> pendingPaths = new ArrayList<>();
-        private final Map<String, Map<Integer, InventoryItem>> lastInventoryByLife = new HashMap<>();
-        private long lastPathFlushAtEpochMillis;
-        private boolean autoFlushSuspended;
+        private final WriterState writerState = new WriterState();
+        private volatile long lastPathFlushAtEpochMillis;
+        private volatile boolean autoFlushSuspended;
+        private volatile boolean finalizationInProgress;
         private final List<MilestoneRecord> milestones = new ArrayList<>();
         private final List<ChatRecord> chat = new ArrayList<>();
         private final Map<UUID, TrackedProjectile> projectiles = new LinkedHashMap<>();
@@ -2322,7 +2514,12 @@ public final class ReportService {
             this.activeKitId = activeKitId;
             this.lastPathFlushAtEpochMillis = startedAtEpochMillis;
             this.autoFlushSuspended = false;
+            this.finalizationInProgress = false;
         }
+    }
+
+    private static final class WriterState {
+        private final Map<String, Map<Integer, InventoryItem>> lastInventoryByLife = new HashMap<>();
     }
 
     private static final class MutableStats {

@@ -13,7 +13,6 @@ import io.github.ganyuke.peoplehunt.game.match.MatchTickService;
 import io.github.ganyuke.peoplehunt.game.Role;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.github.ganyuke.peoplehunt.util.ItemUtil;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -189,11 +188,7 @@ public class MatchLifecycleListener implements Listener {
         Role role = matchManager.roleOf(player.getUniqueId());
         if (role == Role.RUNNER) {
             session.lifeIndex.compute(player.getUniqueId(), (ignored, current) -> (current == null ? 1 : current) + 1);
-            try {
-                matchManager.endHunterVictory();
-            } catch (IOException exception) {
-                throw new IllegalStateException(exception);
-            }
+            matchManager.endHunterVictory();
         } else if (role == Role.HUNTER) {
             session.lifeIndex.compute(player.getUniqueId(), (ignored, current) -> (current == null ? 1 : current) + 1);
             MatchSession.DeathstreakState state = session.deathstreaks
@@ -238,11 +233,7 @@ public class MatchLifecycleListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDragonDeath(EntityDeathEvent event) {
         if (matchManager.getSession() != null && event.getEntity() instanceof EnderDragon) {
-            try {
-                matchManager.endRunnerVictory();
-            } catch (IOException exception) {
-                throw new IllegalStateException(exception);
-            }
+            matchManager.endRunnerVictory();
         }
     }
 

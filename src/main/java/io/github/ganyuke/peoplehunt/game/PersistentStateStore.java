@@ -2,7 +2,6 @@ package io.github.ganyuke.peoplehunt.game;
 
 import com.google.gson.Gson;
 import io.github.ganyuke.peoplehunt.game.match.MatchOutcome;
-
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
@@ -11,20 +10,35 @@ import java.nio.file.Path;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
- * Persists operator-controlled configuration state that should survive server restarts.
+ * Small JSON-backed store for operator-facing selections and the cached last-status snapshot.
  *
- * <p>This store intentionally excludes live match state. Active matches are not resumable; the
- * plugin ends them inconclusively on shutdown and only keeps the last finished summary snapshot.
+ * <p>Reads happen synchronously during startup, but routine writes are debounced onto a dedicated
+ * background thread so command-driven selection changes do not block the main thread.
  */
 public final class PersistentStateStore {
+    private static final Logger LOGGER = Logger.getLogger(PersistentStateStore.class.getName());
+    private static final long SAVE_DEBOUNCE_MILLIS = 250L;
+
     private final Path file;
     private final Gson gson;
+    private final ScheduledExecutorService executor;
+    private final Object saveLock = new Object();
+    private StateData pendingSnapshot;
+    private ScheduledFuture<?> pendingSave;
 
     public PersistentStateStore(Path file, Gson gson) {
         this.file = file;
         this.gson = gson;
+        this.executor = Executors.newSingleThreadScheduledExecutor(namedThreadFactory("PeopleHunt-StateStore"));
     }
 
     public Path path() {
@@ -42,10 +56,88 @@ public final class PersistentStateStore {
     }
 
     public void save(StateData data) throws IOException {
+        writeSnapshot(snapshotOf(data));
+    }
+
+    public void saveAsync(StateData data) {
+        synchronized (saveLock) {
+            pendingSnapshot = snapshotOf(data);
+            if (pendingSave != null) {
+                pendingSave.cancel(false);
+            }
+            pendingSave = executor.schedule(this::flushPendingAsync, SAVE_DEBOUNCE_MILLIS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    public void shutdown() {
+        StateData snapshot;
+        synchronized (saveLock) {
+            if (pendingSave != null) {
+                pendingSave.cancel(false);
+                pendingSave = null;
+            }
+            snapshot = pendingSnapshot;
+            pendingSnapshot = null;
+        }
+        if (snapshot != null) {
+            try {
+                writeSnapshot(snapshot);
+            } catch (IOException exception) {
+                LOGGER.log(Level.WARNING, "Failed to flush pending plugin state during shutdown", exception);
+            }
+        }
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        }
+    }
+
+    private void flushPendingAsync() {
+        StateData snapshot;
+        synchronized (saveLock) {
+            snapshot = pendingSnapshot;
+            pendingSnapshot = null;
+            pendingSave = null;
+        }
+        if (snapshot == null) {
+            return;
+        }
+        try {
+            writeSnapshot(snapshot);
+        } catch (IOException exception) {
+            LOGGER.log(Level.WARNING, "Failed to persist PeopleHunt state asynchronously", exception);
+        }
+    }
+
+    private void writeSnapshot(StateData snapshot) throws IOException {
         Files.createDirectories(file.getParent());
         try (Writer writer = Files.newBufferedWriter(file)) {
-            gson.toJson(data, writer);
+            gson.toJson(snapshot, writer);
         }
+    }
+
+    private static StateData snapshotOf(StateData data) {
+        StateData snapshot = new StateData();
+        snapshot.runnerUuid = data.runnerUuid;
+        snapshot.explicitHunters = new LinkedHashSet<>(data.explicitHunters == null ? Set.of() : data.explicitHunters);
+        snapshot.activeKitId = data.activeKitId;
+        snapshot.inventoryControlMode = data.inventoryControlMode;
+        snapshot.selectionGeneration = data.selectionGeneration;
+        snapshot.lastStatusSnapshot = data.lastStatusSnapshot;
+        return snapshot.sanitize();
+    }
+
+    private static ThreadFactory namedThreadFactory(String name) {
+        return runnable -> {
+            Thread thread = new Thread(runnable, name);
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     public static final class StateData {

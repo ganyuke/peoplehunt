@@ -100,6 +100,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         persistence.whereWasStore.load();
 
         services.reportService = new ReportService(
+                this,
                 dataPath.resolve("reports"),
                 gson,
                 getLogger(),
@@ -209,6 +210,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                     services.reportService,
                     services.viewerAssets,
                     gson,
+                    getLogger(),
                     peopleHuntConfig.webBindAddress(),
                     peopleHuntConfig.webPort()
             );
@@ -224,10 +226,10 @@ public final class PeopleHuntPlugin extends JavaPlugin {
             if (services.matchManager != null) {
                 // A server shutdown does not currently support resumable matches, so any active
                 // match is closed as inconclusive before state is saved.
-                services.matchManager.stopInconclusive();
+                services.matchManager.stopInconclusiveBlocking();
             }
         } catch (Exception exception) {
-            getLogger().warning("Failed to finish active match cleanly: " + exception.getMessage());
+            getLogger().log(java.util.logging.Level.WARNING, "Failed to finish active match cleanly.", exception);
         }
     }
 
@@ -252,7 +254,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                 services.reportService.saveIndex();
             }
         } catch (IOException exception) {
-            getLogger().warning("Failed to save plugin state: " + exception.getMessage());
+            getLogger().log(java.util.logging.Level.WARNING, "Failed to save plugin state.", exception);
         }
     }
 
@@ -271,6 +273,18 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         if (services.webServer != null) {
             getLogger().info("Stopping embedded web server.");
             services.webServer.stop();
+        }
+        if (services.reportService != null) {
+            services.reportService.shutdown();
+        }
+        if (services.kitService != null) {
+            services.kitService.shutdown();
+        }
+        if (persistence.whereWasStore != null) {
+            persistence.whereWasStore.shutdown();
+        }
+        if (persistence.stateStore != null) {
+            persistence.stateStore.shutdown();
         }
     }
 

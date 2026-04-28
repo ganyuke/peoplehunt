@@ -12,7 +12,6 @@ import io.github.ganyuke.peoplehunt.report.ViewerAssets;
 import io.github.ganyuke.peoplehunt.util.SelectorUtil;
 import io.github.ganyuke.peoplehunt.util.Text;
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -93,9 +92,22 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("Invalid argument: " + exception.getMessage(), NamedTextColor.RED));
             return true;
         } catch (IOException exception) {
-            sender.sendMessage(Component.text("I/O error: " + exception.getMessage(), NamedTextColor.RED));
+            if (!"start".equals(subcommand)) {
+                matchManager.reportOperatorFailure("execute", "command " + describeCommand(label, args), "command dispatch", exception);
+            }
+            sender.sendMessage(Component.text("That command failed due to a storage error. An operator has been notified.", NamedTextColor.RED));
             return true;
         }
+    }
+
+    private static String describeCommand(String label, String[] args) {
+        String joinedArgs = args == null || args.length == 0 ? "" : " " + String.join(" ", args);
+        return '/' + label + joinedArgs;
+    }
+
+    private void notifyCommandFailure(CommandSender sender, String userMessage, String action, String subject, String trigger, Throwable throwable) {
+        sender.sendMessage(Component.text(userMessage, NamedTextColor.RED));
+        matchManager.notifyOperatorsOfFailure(action, subject, trigger, throwable);
     }
 
     // -------------------------------------------------------------------------
@@ -108,9 +120,9 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handleStop(CommandSender sender) throws IOException {
+    private boolean handleStop(CommandSender sender) {
         matchManager.stopInconclusive();
-        sender.sendMessage(Component.text("Match force-stopped.", NamedTextColor.GREEN));
+        sender.sendMessage(Component.text("Match force-stopped. Report finalization will continue in the background.", NamedTextColor.GREEN));
         return true;
     }
 
@@ -240,7 +252,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return CompassCommandSupport.giveCompass(sender, compassService, args.length >= 2 ? args[1] : null);
     }
 
-    private boolean handleKit(CommandSender sender, String[] args) throws IOException {
+    private boolean handleKit(CommandSender sender, String[] args) {
         if (args.length < 2) {
             sender.sendMessage(Component.text(
                     "Usage: /peoplehunt kit <save|select|clear|delete> [identifier]",
@@ -414,7 +426,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handleAar(CommandSender sender, String[] args) throws IOException {
+    private boolean handleAar(CommandSender sender, String[] args) {
         if (args.length < 2) {
             sender.sendMessage(Component.text("Usage: /peoplehunt aar <list|export|flush>", NamedTextColor.RED));
             return true;
@@ -451,42 +463,58 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handleAarExport(CommandSender sender, String[] args) throws IOException {
+    private boolean handleAarExport(CommandSender sender, String[] args) {
         UUID reportId = args.length >= 3 ? UUID.fromString(args[2]) : reportService.latestReportId();
         if (reportId == null) {
             sender.sendMessage(Component.text("No finished report is available.", NamedTextColor.RED));
             return true;
         }
-        Path export = reportService.export(reportId, viewerAssets.render("LOCAL_EXPORT", reportService.toJson(reportService.readSnapshot(reportId))));
-        sender.sendMessage(Component.text("Exported report to " + export.getFileName(), NamedTextColor.GREEN));
+        sender.sendMessage(Component.text("Queued report export for " + reportId + ".", NamedTextColor.YELLOW));
+        reportService.exportAsync(
+                reportId,
+                viewerAssets,
+                export -> sender.sendMessage(Component.text("Exported report to " + export.getFileName(), NamedTextColor.GREEN)),
+                exception -> notifyCommandFailure(
+                        sender,
+                        "Report export failed. An operator has been notified.",
+                        "export",
+                        "report " + reportId,
+                        "/peoplehunt aar export",
+                        exception
+                )
+        );
         return true;
     }
 
-    private boolean handleAarFlush(CommandSender sender) throws IOException {
-        ManualFlushResult result = reportService.flushActiveReportPathsManually().orElse(null);
-        if (result == null) {
+    private boolean handleAarFlush(CommandSender sender) {
+        boolean scheduled = reportService.flushActiveReportPathsManuallyAsync(result -> {
+            if (result.flushedPathPoints() == 0 && !result.recreatedMissingDatabase()) {
+                sender.sendMessage(Component.text(
+                        "Report flush skipped — no buffered path points were waiting to be written.",
+                        NamedTextColor.YELLOW));
+                return;
+            }
+
+            StringBuilder message = new StringBuilder(
+                    "Report flush complete — wrote " + result.flushedPathPoints()
+                            + " buffered path point(s); " + result.remainingBufferedPathPoints()
+                            + " remain buffered.");
+            if (result.recreatedMissingDatabase()) {
+                message.append(" Active report DB was missing, so a new staging DB was created; this report may be incomplete.");
+            }
+            if (result.autoFlushResumed()) {
+                message.append(" Automatic path flushing resumed.");
+            }
+            sender.sendMessage(Component.text(message.toString(), NamedTextColor.GREEN));
+        }, exception -> sender.sendMessage(Component.text(
+                "Report flush failed. An operator has been notified.",
+                NamedTextColor.RED
+        )));
+        if (!scheduled) {
             sender.sendMessage(Component.text("No active report is running.", NamedTextColor.RED));
             return true;
         }
-
-        if (result.flushedPathPoints() == 0 && !result.recreatedMissingDatabase()) {
-            sender.sendMessage(Component.text(
-                    "Report flush skipped — no buffered path points were waiting to be written.",
-                    NamedTextColor.YELLOW));
-            return true;
-        }
-
-        StringBuilder message = new StringBuilder(
-                "Report flush complete — wrote " + result.flushedPathPoints()
-                        + " buffered path point(s); " + result.remainingBufferedPathPoints()
-                        + " remain buffered.");
-        if (result.recreatedMissingDatabase()) {
-            message.append(" Active report DB was missing, so a new staging DB was created; this report may be incomplete.");
-        }
-        if (result.autoFlushResumed()) {
-            message.append(" Automatic path flushing resumed.");
-        }
-        sender.sendMessage(Component.text(message.toString(), NamedTextColor.GREEN));
+        sender.sendMessage(Component.text("Queued manual report flush.", NamedTextColor.YELLOW));
         return true;
     }
 

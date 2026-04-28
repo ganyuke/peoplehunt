@@ -16,6 +16,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -26,13 +33,21 @@ import org.bukkit.inventory.PlayerInventory;
  * hunter respawns in KIT inventory-control mode.
  */
 public final class KitService {
+    private static final Logger LOGGER = Logger.getLogger(KitService.class.getName());
+    private static final long SAVE_DEBOUNCE_MILLIS = 250L;
+
     private final Path file;
     private final Gson gson;
     private final Map<String, KitDefinition> kits = new LinkedHashMap<>();
+    private final ScheduledExecutorService executor;
+    private final Object saveLock = new Object();
+    private Map<String, KitDefinition> pendingSnapshot;
+    private ScheduledFuture<?> pendingSave;
 
     public KitService(Path file, Gson gson) {
         this.file = file;
         this.gson = gson;
+        this.executor = Executors.newSingleThreadScheduledExecutor(namedThreadFactory("PeopleHunt-KitStore"));
     }
 
     public Path path() {
@@ -53,30 +68,55 @@ public final class KitService {
     }
 
     public void save() throws IOException {
-        Files.createDirectories(file.getParent());
-        try (Writer writer = Files.newBufferedWriter(file)) {
-            gson.toJson(new KitFile(kits), writer);
+        writeSnapshot(snapshotOfKits());
+    }
+
+    public void shutdown() {
+        Map<String, KitDefinition> snapshot;
+        synchronized (saveLock) {
+            if (pendingSave != null) {
+                pendingSave.cancel(false);
+                pendingSave = null;
+            }
+            snapshot = pendingSnapshot;
+            pendingSnapshot = null;
+        }
+        if (snapshot != null) {
+            try {
+                writeSnapshot(snapshot);
+            } catch (IOException exception) {
+                LOGGER.log(Level.WARNING, "Failed to flush pending kit data during shutdown", exception);
+            }
+        }
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
         }
     }
 
     public Collection<String> identifiers() {
-        return kits.keySet().stream().sorted(Comparator.naturalOrder()).toList();
+        return snapshotOfKits().keySet().stream().sorted(Comparator.naturalOrder()).toList();
     }
 
     public Optional<KitDefinition> get(String identifier) {
         return Optional.ofNullable(kits.get(identifier));
     }
 
-    public KitDefinition saveKit(String identifier, Player player) throws IOException {
+    public KitDefinition saveKit(String identifier, Player player) {
         KitDefinition definition = fromPlayer(identifier, player);
         kits.put(identifier, definition);
-        save();
+        saveAsync();
         return definition;
     }
 
-    public boolean deleteKit(String identifier) throws IOException {
+    public boolean deleteKit(String identifier) {
         KitDefinition removed = kits.remove(identifier);
-        save();
+        saveAsync();
         return removed != null;
     }
 
@@ -130,6 +170,52 @@ public final class KitService {
         return definition == null ? List.of() : definition.allItems();
     }
 
+    private void saveAsync() {
+        synchronized (saveLock) {
+            pendingSnapshot = snapshotOfKits();
+            if (pendingSave != null) {
+                pendingSave.cancel(false);
+            }
+            pendingSave = executor.schedule(this::flushPendingAsync, SAVE_DEBOUNCE_MILLIS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void flushPendingAsync() {
+        Map<String, KitDefinition> snapshot;
+        synchronized (saveLock) {
+            snapshot = pendingSnapshot;
+            pendingSnapshot = null;
+            pendingSave = null;
+        }
+        if (snapshot == null) {
+            return;
+        }
+        try {
+            writeSnapshot(snapshot);
+        } catch (IOException exception) {
+            LOGGER.log(Level.WARNING, "Failed to persist kit data asynchronously", exception);
+        }
+    }
+
+    private Map<String, KitDefinition> snapshotOfKits() {
+        return new LinkedHashMap<>(kits);
+    }
+
+    private void writeSnapshot(Map<String, KitDefinition> snapshot) throws IOException {
+        Files.createDirectories(file.getParent());
+        try (Writer writer = Files.newBufferedWriter(file)) {
+            gson.toJson(new KitFile(snapshot), writer);
+        }
+    }
+
+    private static ThreadFactory namedThreadFactory(String name) {
+        return runnable -> {
+            Thread thread = new Thread(runnable, name);
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
     private static KitDefinition fromPlayer(String identifier, Player player) {
         // A saved kit is a full snapshot of visible inventory layout, including armor and offhand,
         // so later reapplication can preserve the intended slot arrangement.
@@ -157,7 +243,7 @@ public final class KitService {
         if (!offHand.getType().isAir()) {
             slots.add(KitSlot.offhand(offHand));
         }
-        return new KitDefinition(identifier, slots);
+        return new KitDefinition(identifier, List.copyOf(slots));
     }
 
     private record KitFile(Map<String, KitDefinition> kits) {}
@@ -220,23 +306,15 @@ public final class KitService {
             return false;
         }
 
-        private boolean placeArmor(ItemSupplier supplier, ItemConsumer consumer, ItemStack stack) {
-            ItemStack existing = supplier.get();
+        private boolean placeArmor(java.util.function.Supplier<ItemStack> getter,
+                                   java.util.function.Consumer<ItemStack> setter,
+                                   ItemStack stack) {
+            ItemStack existing = getter.get();
             if (existing == null || existing.getType().isAir()) {
-                consumer.accept(stack);
+                setter.accept(stack);
                 return true;
             }
             return false;
         }
-    }
-
-    @FunctionalInterface
-    private interface ItemSupplier {
-        ItemStack get();
-    }
-
-    @FunctionalInterface
-    private interface ItemConsumer {
-        void accept(ItemStack item);
     }
 }

@@ -2,7 +2,6 @@ package io.github.ganyuke.peoplehunt.command;
 
 import io.github.ganyuke.peoplehunt.game.tools.WhereWasStore;
 import io.github.ganyuke.peoplehunt.util.SelectorUtil;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import net.kyori.adventure.text.Component;
@@ -41,8 +40,6 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
                 case "forget" -> forgetCoordinate(player, identifier);
                 default -> sender.sendMessage(Component.text("Unknown subcommand.", NamedTextColor.RED));
             }
-        } catch (IOException exception) {
-            sender.sendMessage(Component.text("Unable to save coordinate data.", NamedTextColor.RED));
         } catch (NumberFormatException exception) {
             sender.sendMessage(Component.text("Coordinates must be numeric.", NamedTextColor.RED));
         }
@@ -69,7 +66,7 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    private void rememberCoordinate(Player player, String identifier, String[] args) throws IOException {
+    private void rememberCoordinate(Player player, String identifier, String[] args) {
         Location location;
         if (args.length == 3 || args.length == 4) {
             // args[2] or args[2..3] present but incomplete — not enough for x y z
@@ -91,7 +88,7 @@ public final class WhereWasCommand implements CommandExecutor, TabCompleter {
                 NamedTextColor.GREEN));
     }
 
-    private void forgetCoordinate(Player player, String identifier) throws IOException {
+    private void forgetCoordinate(Player player, String identifier) {
         boolean removed = whereWasStore.forget(player.getUniqueId(), identifier);
         if (removed) {
             player.sendMessage(Component.text("Forgot '" + identifier + "'.", NamedTextColor.GREEN));

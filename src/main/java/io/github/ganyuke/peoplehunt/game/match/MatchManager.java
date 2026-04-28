@@ -6,6 +6,7 @@ import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.tools.SurroundService;
 import io.github.ganyuke.peoplehunt.report.ReportModels;
 import io.github.ganyuke.peoplehunt.report.ReportService;
+import io.github.ganyuke.peoplehunt.util.ExceptionUtil;
 import io.github.ganyuke.peoplehunt.util.Text;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -335,7 +336,7 @@ public final class MatchManager {
                     stateData.activeKitId, participants
             );
         } catch (IOException exception) {
-            warnOperators("PeopleHunt reporting error: failed to initialize the match report database. The match was not started. See console.");
+            reportOperatorFailure("initialize", "the match report database", "match start", exception);
             throw exception;
         }
 
@@ -397,20 +398,35 @@ public final class MatchManager {
         return reportId;
     }
 
-    public Optional<ReportService.FinishResult> stopInconclusive() throws IOException {
+    public void stopInconclusive() {
         if (activeSession == null) {
             cancelPrimeInternal();
-            return pendingFinalizationOutcome == null ? Optional.empty() : finalizePendingReport();
+            if (pendingFinalizationOutcome != null) {
+                finalizePendingReportAsync();
+            }
+            return;
         }
-        return finishMatch(MatchOutcome.INCONCLUSIVE);
+        finishMatchAsync(MatchOutcome.INCONCLUSIVE);
     }
 
-    public Optional<ReportService.FinishResult> endHunterVictory() throws IOException {
-        return activeSession == null ? Optional.empty() : finishMatch(MatchOutcome.HUNTER_VICTORY);
+    public Optional<ReportService.FinishResult> stopInconclusiveBlocking() throws IOException {
+        if (activeSession == null) {
+            cancelPrimeInternal();
+            return pendingFinalizationOutcome == null ? Optional.empty() : finalizePendingReportBlocking();
+        }
+        return finishMatchBlocking(MatchOutcome.INCONCLUSIVE);
     }
 
-    public Optional<ReportService.FinishResult> endRunnerVictory() throws IOException {
-        return activeSession == null ? Optional.empty() : finishMatch(MatchOutcome.RUNNER_VICTORY);
+    public void endHunterVictory() {
+        if (activeSession != null) {
+            finishMatchAsync(MatchOutcome.HUNTER_VICTORY);
+        }
+    }
+
+    public void endRunnerVictory() {
+        if (activeSession != null) {
+            finishMatchAsync(MatchOutcome.RUNNER_VICTORY);
+        }
     }
 
     private void announceFinishedSummaryOnce(String summary) {
@@ -420,52 +436,79 @@ public final class MatchManager {
         Bukkit.getScheduler().runTask(plugin, () -> broadcast(component));
     }
 
-    private Optional<ReportService.FinishResult> finishMatch(MatchOutcome outcome) throws IOException {
+    private void finishMatchAsync(MatchOutcome outcome) {
+        if (activeSession == null) {
+            return;
+        }
+        tickService.stopRuntimeTasks();
+        activeSession = null;
+        pendingFinalizationOutcome = outcome;
+        broadcast(Text.mm("<green>Manhunt ended."));
+        finalizePendingReportAsync();
+    }
+
+    private Optional<ReportService.FinishResult> finishMatchBlocking(MatchOutcome outcome) throws IOException {
         if (activeSession == null) {
             return Optional.empty();
         }
         tickService.stopRuntimeTasks();
         activeSession = null;
         pendingFinalizationOutcome = outcome;
+        broadcast(Text.mm("<green>Manhunt ended."));
+        return finalizePendingReportBlocking();
+    }
 
-        try {
-            return finalizePendingReport();
-        } catch (IOException exception) {
-            warnOperators("PeopleHunt reporting error: match finalization failed. The match outcome was preserved, but the report could not be written. Fix report storage and run /peoplehunt stop again. See console.");
-            throw exception;
+    private void finalizePendingReportAsync() {
+        if (pendingFinalizationOutcome == null) {
+            return;
+        }
+        MatchOutcome outcome = pendingFinalizationOutcome;
+        UUID reportId = reportService.activeReportId();
+        boolean scheduled = reportService.finishAsync(outcome, result -> {
+            pendingFinalizationOutcome = null;
+            result.ifPresent(finish -> applyFinishedReport(outcome, finish));
+        }, exception -> notifyOperatorsOfFailure(
+                "finalize",
+                reportId == null ? "the finished match report" : "report " + reportId,
+                "automatic match end",
+                exception
+        ));
+        if (!scheduled && !reportService.isFinalizationInProgress()) {
+            warnOperators("PeopleHunt reporting error: match finalization could not be scheduled. Try /peoplehunt stop again once report storage is healthy.");
         }
     }
 
-    private Optional<ReportService.FinishResult> finalizePendingReport() throws IOException {
+    private Optional<ReportService.FinishResult> finalizePendingReportBlocking() throws IOException {
         if (pendingFinalizationOutcome == null) {
             return Optional.empty();
         }
         MatchOutcome outcome = pendingFinalizationOutcome;
-        Optional<ReportService.FinishResult> result = reportService.finish(outcome);
+        Optional<ReportService.FinishResult> result = reportService.finishBlocking(outcome);
         pendingFinalizationOutcome = null;
-        broadcast(Text.mm("<green>Manhunt ended."));
-        result.ifPresent(finish -> {
-            String summary = buildFinishedStatsMessage(finish.snapshot());
-            // The formatted summary is cached into persisted state so /peoplehunt status can show
-            // the last finished match even after restart, as long as selections have not changed.
-            announceFinishedSummaryOnce(summary);
-            stateData.lastStatusSnapshot = new PersistentStateStore.LastStatusSnapshot(
-                    finish.indexEntry().reportId(),
-                    stateData.selectionGeneration,
-                    finish.indexEntry().startedAtEpochMillis(),
-                    finish.indexEntry().endedAtEpochMillis(),
-                    outcome,
-                    finish.indexEntry().runnerUuid(),
-                    finish.indexEntry().runnerName(),
-                    Text.formatTimestamp(finish.indexEntry().startedAtEpochMillis()),
-                    Text.formatDurationMillis(
-                            finish.indexEntry().endedAtEpochMillis() - finish.indexEntry().startedAtEpochMillis()
-                    ),
-                    summary
-            );
-            persistQuietly();
-        });
+        result.ifPresent(finish -> applyFinishedReport(outcome, finish));
         return result;
+    }
+
+    private void applyFinishedReport(MatchOutcome outcome, ReportService.FinishResult finish) {
+        String summary = buildFinishedStatsMessage(finish.snapshot());
+        // The formatted summary is cached into persisted state so /peoplehunt status can show
+        // the last finished match even after restart, as long as selections have not changed.
+        announceFinishedSummaryOnce(summary);
+        stateData.lastStatusSnapshot = new PersistentStateStore.LastStatusSnapshot(
+                finish.indexEntry().reportId(),
+                stateData.selectionGeneration,
+                finish.indexEntry().startedAtEpochMillis(),
+                finish.indexEntry().endedAtEpochMillis(),
+                outcome,
+                finish.indexEntry().runnerUuid(),
+                finish.indexEntry().runnerName(),
+                Text.formatTimestamp(finish.indexEntry().startedAtEpochMillis()),
+                Text.formatDurationMillis(
+                        finish.indexEntry().endedAtEpochMillis() - finish.indexEntry().startedAtEpochMillis()
+                ),
+                summary
+        );
+        persistQuietly();
     }
 
     public boolean isRunner(UUID uuid) {
@@ -526,6 +569,27 @@ public final class MatchManager {
         Bukkit.getConsoleSender().sendMessage(component);
     }
 
+    public void notifyOperatorsOfFailure(String action, String subject, String trigger, Throwable throwable) {
+        StringBuilder message = new StringBuilder("PeopleHunt: failed to ")
+                .append(action)
+                .append(' ')
+                .append(subject);
+        if (trigger != null && !trigger.isBlank()) {
+            message.append(" via ").append(trigger);
+        }
+        message.append(" due to ")
+                .append(ExceptionUtil.summarize(throwable))
+                .append(". See console.");
+        warnOperators(message.toString());
+    }
+
+    public void reportOperatorFailure(String action, String subject, String trigger, Throwable throwable) {
+        notifyOperatorsOfFailure(action, subject, trigger, throwable);
+        plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                "Failed to " + action + ' ' + subject + (trigger == null || trigger.isBlank() ? "" : " via " + trigger) + '.',
+                throwable);
+    }
+
     public String nameOf(UUID uuid) {
         if (uuid == null) return "unset";
         Player online = Bukkit.getPlayer(uuid);
@@ -554,11 +618,7 @@ public final class MatchManager {
     }
 
     private void persistQuietly() {
-        try {
-            stateStore.save(stateData);
-        } catch (IOException exception) {
-            plugin.getLogger().warning("Failed to persist PeopleHunt state: " + exception.getMessage());
-        }
+        stateStore.saveAsync(stateData);
     }
 
     private Set<UUID> resolveNextParticipantUuids(boolean includeRunner) {

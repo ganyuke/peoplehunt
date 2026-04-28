@@ -14,17 +14,21 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public final class EmbeddedWebServer {
     private final HttpServer server;
     private final ReportService reportService;
     private final ViewerAssets viewerAssets;
     private final Gson gson;
+    private final Logger logger;
 
-    public EmbeddedWebServer(ReportService reportService, ViewerAssets viewerAssets, Gson gson, String bindAddress, int port) throws IOException {
+    public EmbeddedWebServer(ReportService reportService, ViewerAssets viewerAssets, Gson gson, Logger logger, String bindAddress, int port) throws IOException {
         this.reportService = reportService;
         this.viewerAssets = viewerAssets;
         this.gson = gson;
+        this.logger = logger;
         // The bind address selects which local interface this embedded server listens on. Typical
         // values are 127.0.0.1 (local only), 0.0.0.0 (all interfaces), or a specific local IP.
         this.server = HttpServer.create(new InetSocketAddress(InetAddress.getByName(bindAddress), port), 0);
@@ -39,21 +43,12 @@ public final class EmbeddedWebServer {
         server.stop(0);
     }
 
-    public String renderViewerHtml(String reportId) {
-        try {
-            UUID uuid = UUID.fromString(reportId);
-            return viewerAssets.render(reportId, gson.toJson(reportService.readSnapshot(uuid)));
-        } catch (Exception ignored) {
-            return viewerAssets.render(reportId, "null");
-        }
+    private String renderViewerHtml(UUID reportId) throws IOException {
+        return viewerAssets.render(reportId.toString(), gson.toJson(reportService.readSnapshot(reportId)));
     }
 
-    public String renderExportHtml(UUID reportId) {
-        try {
-            return viewerAssets.render("LOCAL_EXPORT", gson.toJson(reportService.readSnapshot(reportId)));
-        } catch (Exception ignored) {
-            return viewerAssets.render("LOCAL_EXPORT", "null");
-        }
+    public String renderExportHtml(UUID reportId) throws IOException {
+        return viewerAssets.render("LOCAL_EXPORT", gson.toJson(reportService.readSnapshot(reportId)));
     }
 
     private void createContexts() {
@@ -67,8 +62,13 @@ public final class EmbeddedWebServer {
             respond(exchange, 405, "Method not allowed", "text/plain");
             return;
         }
-        List<IndexEntry> entries = reportService.listReports();
-        respond(exchange, 200, renderIndexHtml(entries), "text/html; charset=utf-8");
+        try {
+            List<IndexEntry> entries = reportService.listReports();
+            respond(exchange, 200, renderIndexHtml(entries), "text/html; charset=utf-8");
+        } catch (Exception exception) {
+            logRequestFailure(exchange, "render the report index", exception);
+            respond(exchange, 500, "Unable to render report index.", "text/plain; charset=utf-8");
+        }
     }
 
     private String renderIndexHtml(List<IndexEntry> entries) {
@@ -153,7 +153,23 @@ public final class EmbeddedWebServer {
             respond(exchange, 404, "Report not found", "text/plain");
             return;
         }
-        respond(exchange, 200, renderViewerHtml(parts[2]), "text/html; charset=utf-8");
+        UUID reportId;
+        try {
+            reportId = UUID.fromString(parts[2]);
+        } catch (IllegalArgumentException exception) {
+            respond(exchange, 404, "Report not found", "text/plain");
+            return;
+        }
+        if (reportService.findIndex(reportId).isEmpty()) {
+            respond(exchange, 404, "Report not found", "text/plain");
+            return;
+        }
+        try {
+            respond(exchange, 200, renderViewerHtml(reportId), "text/html; charset=utf-8");
+        } catch (Exception exception) {
+            logRequestFailure(exchange, "render report viewer for " + reportId, exception);
+            respond(exchange, 500, "Unable to render report viewer.", "text/plain; charset=utf-8");
+        }
     }
 
     private void handleReportApi(HttpExchange exchange) throws IOException {
@@ -174,12 +190,24 @@ public final class EmbeddedWebServer {
             respond(exchange, 404, "Report not found", "text/plain");
             return;
         }
+        if (reportService.findIndex(reportId).isEmpty()) {
+            respond(exchange, 404, "Report not found", "text/plain");
+            return;
+        }
         try {
             String json = gson.toJson(reportService.readSnapshot(reportId));
             respond(exchange, 200, json, "application/json; charset=utf-8");
-        } catch (IOException exception) {
-            respond(exchange, 500, "Unable to read report: " + exception.getMessage(), "text/plain; charset=utf-8");
+        } catch (Exception exception) {
+            logRequestFailure(exchange, "read report API payload for " + reportId, exception);
+            respond(exchange, 500, "Unable to read report.", "text/plain; charset=utf-8");
         }
+    }
+
+    private void logRequestFailure(HttpExchange exchange, String action, Exception exception) {
+        logger.log(Level.WARNING,
+                "Embedded web request failed while attempting to " + action + " for "
+                        + exchange.getRequestMethod() + ' ' + exchange.getRequestURI(),
+                exception);
     }
 
     private static String formatDuration(long durationMillis) {
