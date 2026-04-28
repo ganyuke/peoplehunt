@@ -8,6 +8,7 @@ import io.github.ganyuke.peoplehunt.game.KitService;
 import io.github.ganyuke.peoplehunt.game.compass.CompassDimensionMode;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -90,14 +91,34 @@ public final class SettingsCommand {
     }
 
     private boolean handleSave(org.bukkit.command.CommandSender sender) {
-        sessionConfigLoader.save(sessionConfigFile, matchManager.getSessionConfig());
+        try {
+            sessionConfigLoader.save(sessionConfigFile, matchManager.getSessionConfig());
+        } catch (IOException exception) {
+            matchManager.getPlugin().getLogger().log(
+                    java.util.logging.Level.SEVERE,
+                    "Failed to save session-config.yml to " + sessionConfigFile.getAbsolutePath(),
+                    exception
+            );
+            sender.sendMessage(Component.text("Failed to save session-config.yml. See console for details.", NamedTextColor.RED));
+            return true;
+        }
         sender.sendMessage(Component.text("Session config saved to session-config.yml.", NamedTextColor.GREEN));
         return true;
     }
 
     private boolean handleReload(org.bukkit.command.CommandSender sender) {
         if (!sessionConfigFile.exists()) {
-            sessionConfigLoader.generateDefault(sessionConfigFile);
+            try {
+                sessionConfigLoader.generateDefault(sessionConfigFile);
+            } catch (IOException exception) {
+                matchManager.getPlugin().getLogger().log(
+                        java.util.logging.Level.SEVERE,
+                        "Failed to regenerate missing session-config.yml at " + sessionConfigFile.getAbsolutePath(),
+                        exception
+                );
+                sender.sendMessage(Component.text("Failed to regenerate session-config.yml. See console for details.", NamedTextColor.RED));
+                return true;
+            }
             sender.sendMessage(Component.text("session-config.yml was missing and has been regenerated from defaults.", NamedTextColor.YELLOW));
         }
         SessionConfig previous = matchManager.getSessionConfig();

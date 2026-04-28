@@ -65,7 +65,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
             startServices();
             registerTicking();
         } catch (Exception exception) {
-            throw new IllegalStateException("Failed to enable PeopleHunt", exception);
+            getLogger().log(java.util.logging.Level.SEVERE, "Failed to enable PeopleHunt", exception);
+            getServer().getPluginManager().disablePlugin(this);
         }
     }
 
@@ -87,11 +88,20 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         return dataPath;
     }
 
-    private void loadSessionConfig(Path dataPath) {
+    private void loadSessionConfig(Path dataPath) throws IOException {
         services.sessionConfigLoader = new SessionConfigLoader(this);
         services.sessionConfigFile = dataPath.resolve("session-config.yml").toFile();
         if (!services.sessionConfigFile.exists()) {
-            services.sessionConfigLoader.generateDefault(services.sessionConfigFile);
+            try {
+                services.sessionConfigLoader.generateDefault(services.sessionConfigFile);
+            } catch (IOException exception) {
+                getLogger().log(
+                        java.util.logging.Level.SEVERE,
+                        "Failed to generate session-config.yml at " + services.sessionConfigFile.getAbsolutePath(),
+                        exception
+                );
+                throw exception;
+            }
             getLogger().info("session-config.yml generated. If you had custom session settings in config.yml, please migrate them to session-config.yml.");
         }
         services.sessionConfig = services.sessionConfigLoader.load(services.sessionConfigFile);

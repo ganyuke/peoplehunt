@@ -69,17 +69,16 @@ public final class SessionConfigLoader {
         return builder.build();
     }
 
-    public void generateDefault(File file) {
+    public void generateDefault(File file) throws IOException {
         save(file, SessionConfig.defaults());
     }
 
-    public void save(File file, SessionConfig config) {
-        try {
-            Files.createDirectories(file.toPath().getParent());
-            Files.writeString(file.toPath(), render(config), StandardCharsets.UTF_8);
-        } catch (IOException exception) {
-            throw new IllegalStateException("Failed to write session-config.yml", exception);
+    public void save(File file, SessionConfig config) throws IOException {
+        java.nio.file.Path parent = file.toPath().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
         }
+        Files.writeString(file.toPath(), render(config), StandardCharsets.UTF_8);
     }
 
     private boolean readBoolean(YamlConfiguration yaml, String path, boolean fallback) {

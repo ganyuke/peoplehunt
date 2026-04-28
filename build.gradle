@@ -9,7 +9,7 @@ plugins {
 }
 
 group = 'io.github.ganyuke'
-version = '0.5.0'
+version = '0.5.1'
 
 def minecraftGameVersion = (findProperty('minecraftGameVersion') ?: '1.21.11').toString()
 def preactVersion = (findProperty('preactVersion') ?: '10.29.1').toString()

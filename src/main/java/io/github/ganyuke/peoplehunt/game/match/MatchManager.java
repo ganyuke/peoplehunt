@@ -106,6 +106,10 @@ public final class MatchManager {
         return stateData;
     }
 
+    public JavaPlugin getPlugin() {
+        return plugin;
+    }
+
     public SessionConfig getSessionConfig() {
         return sessionConfig;
     }
