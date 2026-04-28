@@ -1,6 +1,7 @@
 package io.github.ganyuke.peoplehunt.game.match;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
+import io.github.ganyuke.peoplehunt.config.SessionConfig;
 import io.github.ganyuke.peoplehunt.game.*;
 import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.tools.SurroundService;
@@ -29,6 +30,8 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Owns the authoritative match state machine.
@@ -65,16 +68,19 @@ public final class MatchManager {
     private final ReportService reportService;
     private final SurroundService surroundService;
     private final MatchTickService tickService;
+    private SessionConfig sessionConfig;
 
     private PrimeContext primeContext;
     private MatchSession activeSession;
     private MatchOutcome pendingFinalizationOutcome;
+    private @Nullable BukkitTask announcementTask;
 
     public MatchManager(
             JavaPlugin plugin, PeopleHuntConfig config, PersistentStateStore stateStore,
             PersistentStateStore.StateData stateData, KitService kitService,
             CompassService compassService, ReportService reportService,
-            SurroundService surroundService, MatchTickService tickService
+            SurroundService surroundService, MatchTickService tickService,
+            SessionConfig sessionConfig
     ) {
         this.plugin = plugin;
         this.config = config;
@@ -85,6 +91,7 @@ public final class MatchManager {
         this.reportService = reportService;
         this.surroundService = surroundService;
         this.tickService = tickService;
+        this.sessionConfig = sessionConfig;
     }
 
     public MatchSession getSession() {
@@ -97,6 +104,21 @@ public final class MatchManager {
 
     public PersistentStateStore.StateData getStateData() {
         return stateData;
+    }
+
+    public SessionConfig getSessionConfig() {
+        return sessionConfig;
+    }
+
+    public void applySessionConfig(SessionConfig config) {
+        this.sessionConfig = config;
+        if (activeSession != null) {
+            activeSession.activeKitId = config.kitSelected();
+            activeSession.keepInventoryMode = activeSession.endInventoryControlActivated
+                    ? config.endInventoryControlMode()
+                    : config.inventoryControlMode();
+            reportService.updateSessionSettings(activeSession.keepInventoryMode, activeSession.activeKitId);
+        }
     }
 
     public boolean hasActiveMatch() {
@@ -120,19 +142,13 @@ public final class MatchManager {
     }
 
     public KeepInventoryMode inventoryControlMode() {
-        return stateData.inventoryControlMode;
+        return sessionConfig.inventoryControlMode();
     }
 
     public void setInventoryControlMode(KeepInventoryMode mode) {
         KeepInventoryMode resolved = (mode == null || mode == KeepInventoryMode.INHERIT)
                 ? KeepInventoryMode.NONE : mode;
-        stateData.inventoryControlMode = resolved;
-        if (activeSession != null) {
-            activeSession.keepInventoryMode = resolved;
-            reportService.updateSessionSettings(resolved, activeSession.activeKitId);
-            broadcast(Text.mm("<yellow>Inventory control changed to <white>" + resolved + "</white>.</yellow>"));
-        }
-        persistQuietly();
+        applySessionConfig(sessionConfig.toBuilder().inventoryControlMode(resolved).build());
     }
 
     /**
@@ -151,16 +167,11 @@ public final class MatchManager {
     }
 
     public String activeKitId() {
-        return stateData.activeKitId;
+        return sessionConfig.kitSelected();
     }
 
     public void setActiveKitId(String activeKitId) {
-        stateData.activeKitId = activeKitId;
-        if (activeSession != null) {
-            activeSession.activeKitId = activeKitId;
-            reportService.updateSessionSettings(activeSession.keepInventoryMode, activeKitId);
-        }
-        persistQuietly();
+        applySessionConfig(sessionConfig.toBuilder().kitSelected(activeKitId).build());
     }
 
     public boolean toggleRunner(UUID playerUuid) {
@@ -274,7 +285,7 @@ public final class MatchManager {
         // kept full while waiting for first movement.
         primeContext = PrimeContext.create(
                 runner.getLocation().clone(),
-                keepPlayersFullOverride == null ? config.primeKeepPlayersFull() : keepPlayersFullOverride,
+                keepPlayersFullOverride,
                 participants
         );
         tickService.startPrimeTask();
@@ -332,8 +343,8 @@ public final class MatchManager {
         UUID reportId;
         try {
             reportId = reportService.startSession(
-                    runner.getUniqueId(), runner.getName(), stateData.inventoryControlMode,
-                    stateData.activeKitId, participants
+                    runner.getUniqueId(), runner.getName(), sessionConfig.inventoryControlMode(),
+                    sessionConfig.kitSelected(), participants
             );
         } catch (IOException exception) {
             reportOperatorFailure("initialize", "the match report database", "match start", exception);
@@ -348,10 +359,9 @@ public final class MatchManager {
                 runner.getUniqueId(),
                 hunterIds,
                 spectatorIds,
-                stateData.activeKitId,
-                stateData.inventoryControlMode
+                sessionConfig.kitSelected(),
+                sessionConfig.inventoryControlMode()
         );
-        activeSession.nextElapsedAnnouncementMinutes = Math.max(1, config.elapsedAnnouncementMinutes());
         activeSession.currentRunnerLocation = runner.getLocation().clone();
 
         activeSession.lifeIndex.put(runner.getUniqueId(), 1);
@@ -376,16 +386,17 @@ public final class MatchManager {
                 activeSession.roles.put(player.getUniqueId(), Role.HUNTER);
                 player.setGameMode(GameMode.SURVIVAL);
                 compassService.giveCompass(List.of(player));
-                if (config.applyKitOnStart() && stateData.activeKitId != null) {
-                    kitService.applyMissingKit(player, stateData.activeKitId);
+                if (sessionConfig.kitApplyOnStart() && sessionConfig.kitSelected() != null) {
+                    kitService.applyMissingKit(player, sessionConfig.kitSelected());
                 }
             } else {
                 activeSession.roles.put(player.getUniqueId(), Role.SPECTATOR);
-                if (config.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
+                if (sessionConfig.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
             }
         }
 
         tickService.startRuntimeTasks();
+        scheduleElapsedAnnouncementsForCurrentSession();
         for (UUID uuid : new ArrayList<>(activeSession.roles.keySet())) {
             Player sampled = Bukkit.getPlayer(uuid);
             if (sampled != null) {
@@ -441,6 +452,7 @@ public final class MatchManager {
             return;
         }
         tickService.stopRuntimeTasks();
+        cancelAnnouncementTask();
         activeSession = null;
         pendingFinalizationOutcome = outcome;
         broadcast(Text.mm("<green>Manhunt ended."));
@@ -452,6 +464,7 @@ public final class MatchManager {
             return Optional.empty();
         }
         tickService.stopRuntimeTasks();
+        cancelAnnouncementTask();
         activeSession = null;
         pendingFinalizationOutcome = outcome;
         broadcast(Text.mm("<green>Manhunt ended."));
@@ -552,6 +565,52 @@ public final class MatchManager {
     public void cancelPrimeInternal() {
         primeContext = null;
         tickService.cancelPrimeTask();
+    }
+
+    public void cancelAnnouncementTask() {
+        if (announcementTask != null) {
+            announcementTask.cancel();
+            announcementTask = null;
+        }
+    }
+
+    public @Nullable String scheduleElapsedAnnouncementsForCurrentSession() {
+        cancelAnnouncementTask();
+        MatchSession session = activeSession;
+        if (session == null) {
+            return null;
+        }
+        int intervalMinutes = sessionConfig.elapsedAnnouncementMinutes();
+        if (intervalMinutes <= 0) {
+            return "Elapsed time announcements disabled.";
+        }
+
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - session.startedAtEpochMillis);
+        long intervalMs = intervalMinutes * 60_000L;
+        long offsetMs = intervalMs - (elapsedMs % intervalMs);
+        long delayTicks = Math.max(1L, (offsetMs + 49L) / 50L);
+        long intervalTicks = Math.max(1L, (intervalMs + 49L) / 50L);
+        announcementTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (activeSession != session) {
+                return;
+            }
+            announceElapsedTime(session);
+            announcementTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                if (activeSession != session) {
+                    cancelAnnouncementTask();
+                    return;
+                }
+                announceElapsedTime(session);
+            }, intervalTicks, intervalTicks);
+        }, delayTicks);
+        return "Next elapsed announcement in "
+                + Text.formatDurationMillis(offsetMs)
+                + ". Repeating every " + intervalMinutes + " minutes.";
+    }
+
+    private void announceElapsedTime(MatchSession session) {
+        long elapsedMinutes = Math.max(0L, (System.currentTimeMillis() - session.startedAtEpochMillis) / 60_000L);
+        broadcast(Text.mm("<yellow>Manhunt time elapsed: " + elapsedMinutes + " minutes"));
     }
 
     public void broadcast(Component component) {
@@ -673,7 +732,7 @@ public final class MatchManager {
         activeSession.deathstreaks.putIfAbsent(uuid, new MatchSession.DeathstreakState());
         player.setGameMode(GameMode.SURVIVAL);
         compassService.giveCompass(List.of(player));
-        if (stateData.activeKitId != null) kitService.applyMissingKit(player, stateData.activeKitId);
+        if (sessionConfig.kitSelected() != null) kitService.applyMissingKit(player, sessionConfig.kitSelected());
         reportService.registerParticipant(uuid, player.getName(), Role.HUNTER.name(), true, false);
         reportService.recordTimeline(uuid, player.getName(), "participant", "joined as hunter");
     }
@@ -687,7 +746,7 @@ public final class MatchManager {
         activeSession.spectatorIds.add(uuid);
         activeSession.roles.put(uuid, Role.SPECTATOR);
         Player player = Bukkit.getPlayer(uuid);
-        if (player != null && config.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
+        if (player != null && sessionConfig.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
         if (player != null) {
             reportService.registerParticipant(uuid, player.getName(), Role.SPECTATOR.name(), true, false);
             reportService.recordTimeline(uuid, player.getName(), "participant", "changed to spectator");
@@ -732,7 +791,7 @@ public final class MatchManager {
                 statusLine("Runner", white(nameOf(stateData.runnerUuid))),
                 statusLine("Hunters", white(namesOf(resolveNextHunterUuids()))),
                 statusLine("Primed at", white(Text.formatTimestamp(primeContext.primedAtEpochMillis()))),
-                statusLine("Keep full", white(String.valueOf(primeContext.keepPlayersFull())))
+                statusLine("Keep full", white(String.valueOf(primeContext.keepPlayersFull(sessionConfig))))
         ));
     }
 
@@ -746,10 +805,10 @@ public final class MatchManager {
                                 ? "all online except runner"
                                 : namesOf(stateData.explicitHunters))
                 ),
-                statusLine("Inventory control", white(String.valueOf(stateData.inventoryControlMode)))
+                statusLine("Inventory control", white(String.valueOf(sessionConfig.inventoryControlMode())))
         ));
-        if (stateData.inventoryControlMode == KeepInventoryMode.KIT) {
-            lines.add(statusLine("Kit", white(displayKit(stateData.activeKitId))));
+        if (sessionConfig.inventoryControlMode() == KeepInventoryMode.KIT) {
+            lines.add(statusLine("Kit", white(displayKit(sessionConfig.kitSelected()))));
         }
         return messageBlock("PEOPLEHUNT STATUS", lines);
     }

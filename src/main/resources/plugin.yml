@@ -7,9 +7,9 @@ api-version: '1.21.11'
 website: https://github.com/ganyuke/peoplehunt
 commands:
   peoplehunt:
-    aliases: [manhunt]
+    aliases: [manhunt, ph]
     description: Main PeopleHunt command.
-    usage: /<command>
+    usage: /<command> [start|stop|status|prime|runner|hunter|surround|prepare|kit|rollback|compass|deathstreak|aar|settings]
   compass:
     description: Get a manhunt compass.
     usage: /<command> [player]

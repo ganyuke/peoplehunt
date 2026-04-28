@@ -1,7 +1,7 @@
 package io.github.ganyuke.peoplehunt.command;
 
+import io.github.ganyuke.peoplehunt.config.SessionConfigLoader;
 import io.github.ganyuke.peoplehunt.game.compass.CompassService;
-import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
 import io.github.ganyuke.peoplehunt.game.KitService;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager;
 import io.github.ganyuke.peoplehunt.game.match.MatchManager.PrepareMode;
@@ -44,13 +44,15 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
     private final KitService kitService;
     private final ReportService reportService;
     private final ViewerAssets viewerAssets;
+    private final SettingsCommand settingsCommand;
 
-    public PeopleHuntCommand(MatchManager matchManager, CompassService compassService, KitService kitService, ReportService reportService, ViewerAssets viewerAssets) {
+    public PeopleHuntCommand(MatchManager matchManager, CompassService compassService, KitService kitService, ReportService reportService, ViewerAssets viewerAssets, SessionConfigLoader sessionConfigLoader, java.io.File sessionConfigFile) {
         this.matchManager = matchManager;
         this.compassService = compassService;
         this.kitService = kitService;
         this.reportService = reportService;
         this.viewerAssets = viewerAssets;
+        this.settingsCommand = new SettingsCommand(matchManager, kitService, sessionConfigLoader, sessionConfigFile);
     }
 
     @Override
@@ -76,7 +78,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "surround"                            -> handleSurround(sender, args);
                 case "compass"                             -> handleCompass(sender, args);
                 case "kit"                                 -> handleKit(sender, args);
-                case "inventorycontrol", "ic"              -> handleInventoryControl(sender, args);
+                case "settings"                            -> settingsCommand.handle(sender, args);
                 case "deathstreak"                         -> handleDeathstreak(sender, args);
                 case "aar"                                 -> handleAar(sender, args);
                 case "rollback"                            -> handleRollback(sender, args);
@@ -364,35 +366,7 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handleInventoryControl(CommandSender sender, String[] args) {
-        if (args.length < 2) {
-            KeepInventoryMode current = matchManager.inventoryControlMode();
-            sender.sendMessage(Component.text(
-                    "Inventory control is currently: " + current
-                    + ". Usage: /peoplehunt inventorycontrol <none|kit|keep>",
-                    NamedTextColor.RED));
-            return true;
-        }
-        String raw = args[1].toUpperCase(Locale.ROOT);
-        KeepInventoryMode mode;
-        try {
-            mode = KeepInventoryMode.valueOf(raw);
-        } catch (IllegalArgumentException e) {
-            sender.sendMessage(Component.text(
-                    "Unknown mode '" + args[1] + "'. Valid: none, kit, keep.", NamedTextColor.RED));
-            return true;
-        }
-        if (mode == KeepInventoryMode.INHERIT) {
-            sender.sendMessage(Component.text(
-                    "INHERIT is not a valid inventory control mode.", NamedTextColor.RED));
-            return true;
-        }
-        matchManager.setInventoryControlMode(mode);
-        // setInventoryControlMode already broadcasts if a session is active; confirm to sender.
-        sender.sendMessage(Component.text(
-                "✔ Inventory control set to " + mode + ".", NamedTextColor.GREEN));
-        return true;
-    }
+
 
 
     private boolean handleRollback(CommandSender sender, String[] args) {
@@ -554,11 +528,15 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
             return filter(List.of(
                     "start", "stop", "prime", "prepare",
                     "runner", "hunter", "status", "surround",
-                    "compass", "kit", "inventorycontrol", "ic",
-                    "deathstreak", "aar", "rollback", "portal"), partial);
+                    "compass", "kit", "deathstreak", "aar",
+                    "rollback", "settings", "portal"), partial);
         }
 
         String sub = args[0].toLowerCase();
+
+        if (sub.equals("settings")) {
+            return settingsCommand.tabComplete(args);
+        }
 
         if (args.length == 2) {
             List<String> opts = switch (sub) {
@@ -568,7 +546,6 @@ public final class PeopleHuntCommand implements CommandExecutor, TabCompleter {
                 case "hunter"                  -> List.of("add", "remove", "toggle", "clear");
                 case "surround"                -> List.of("5", "10", "20");
                 case "kit"                     -> List.of("save", "select", "clear", "delete");
-                case "inventorycontrol", "ic"  -> List.of("none", "kit", "keep");
                 case "deathstreak"             -> List.of("reset");
                 case "aar"                     -> List.of("list", "export", "flush");
                 case "rollback"                -> { List<String> rollbackTargets = new ArrayList<>(); rollbackTargets.add("all"); rollbackTargets.addAll(playerSuggestions(sender)); yield rollbackTargets; }

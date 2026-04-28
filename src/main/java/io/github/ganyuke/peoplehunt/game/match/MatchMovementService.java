@@ -1,11 +1,9 @@
 package io.github.ganyuke.peoplehunt.game.match;
 
-import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
-import java.io.IOException;
-import java.util.UUID;
-
 import io.github.ganyuke.peoplehunt.game.compass.CompassDimensionMode;
 import io.github.ganyuke.peoplehunt.game.compass.CompassTargetProvider;
+import java.io.IOException;
+import java.util.UUID;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -23,11 +21,9 @@ import org.bukkit.event.player.PlayerTeleportEvent;
  */
 public class MatchMovementService implements Listener, CompassTargetProvider {
     private final MatchManager matchManager;
-    private final PeopleHuntConfig config;
 
-    public MatchMovementService(MatchManager matchManager, PeopleHuntConfig config) {
+    public MatchMovementService(MatchManager matchManager) {
         this.matchManager = matchManager;
-        this.config = config;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -99,7 +95,7 @@ public class MatchMovementService implements Listener, CompassTargetProvider {
         if (current == null) return null;
         if (holder.getWorld().getUID().equals(current.getWorld().getUID())) return current;
 
-        if (config.compassDimensionMode() == CompassDimensionMode.LAST_KNOWN && session != null) {
+        if (matchManager.getSessionConfig().compassDimensionMode() == CompassDimensionMode.LAST_KNOWN && session != null) {
             // In cross-dimension situations the compass can either clear or point at the last place
             // the runner was seen in the holder's current dimension.
             Location lastKnown = session.lastKnownRunnerLocations.get(holder.getWorld().getUID());

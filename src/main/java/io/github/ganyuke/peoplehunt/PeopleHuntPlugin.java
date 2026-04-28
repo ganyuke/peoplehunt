@@ -6,6 +6,8 @@ import io.github.ganyuke.peoplehunt.command.CoordinateCommand;
 import io.github.ganyuke.peoplehunt.command.PeopleHuntCommand;
 import io.github.ganyuke.peoplehunt.command.WhereWasCommand;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
+import io.github.ganyuke.peoplehunt.config.SessionConfig;
+import io.github.ganyuke.peoplehunt.config.SessionConfigLoader;
 import io.github.ganyuke.peoplehunt.game.KitService;
 import io.github.ganyuke.peoplehunt.game.PersistentStateStore;
 import io.github.ganyuke.peoplehunt.game.compass.CompassService;
@@ -54,6 +56,7 @@ public final class PeopleHuntPlugin extends JavaPlugin {
             gson = JsonUtil.gson();
 
             Path dataPath = initializeDataDirectories();
+            loadSessionConfig(dataPath);
             loadPersistence(dataPath);
             createServices();
             wireServices();
@@ -82,6 +85,16 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         getLogger().info("Report directory ready at " + dataPath.resolve("reports"));
         getLogger().info("State directory ready at " + dataPath.resolve("state"));
         return dataPath;
+    }
+
+    private void loadSessionConfig(Path dataPath) {
+        services.sessionConfigLoader = new SessionConfigLoader(this);
+        services.sessionConfigFile = dataPath.resolve("session-config.yml").toFile();
+        if (!services.sessionConfigFile.exists()) {
+            services.sessionConfigLoader.generateDefault(services.sessionConfigFile);
+            getLogger().info("session-config.yml generated. If you had custom session settings in config.yml, please migrate them to session-config.yml.");
+        }
+        services.sessionConfig = services.sessionConfigLoader.load(services.sessionConfigFile);
     }
 
     private void loadPersistence(Path dataPath) throws IOException {
@@ -134,13 +147,14 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                 services.compassService,
                 services.reportService,
                 services.surroundService,
-                services.tickService
+                services.tickService,
+                services.sessionConfig
         );
 
         services.tickService.setMatchManager(services.matchManager);
         services.reportService.setRuntimeWarningSink(services.matchManager::warnOperators);
 
-        services.movementService = new MatchMovementService(services.matchManager, peopleHuntConfig);
+        services.movementService = new MatchMovementService(services.matchManager);
         services.compassService.setTargetProvider(services.movementService);
 
         services.attributionManager = new AttributionManager(peopleHuntConfig, services.matchManager, services.reportService);
@@ -186,7 +200,9 @@ public final class PeopleHuntPlugin extends JavaPlugin {
                 services.compassService,
                 services.kitService,
                 services.reportService,
-                services.viewerAssets
+                services.viewerAssets,
+                services.sessionConfigLoader,
+                services.sessionConfigFile
         );
 
         register("peoplehunt", peopleHuntCommand);
@@ -319,5 +335,8 @@ public final class PeopleHuntPlugin extends JavaPlugin {
         private EmbeddedWebServer webServer;
         private AttributionManager attributionManager;
         private BukkitTask attributionTask;
+        private SessionConfigLoader sessionConfigLoader;
+        private java.io.File sessionConfigFile;
+        private SessionConfig sessionConfig;
     }
 }

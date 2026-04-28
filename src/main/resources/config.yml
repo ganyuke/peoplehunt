@@ -1,26 +1,10 @@
 match:
-  elapsed-announcement-minutes: 30
-  prime:
-    keep-players-full: true
   player-path-sample-interval-ticks: 20
-  auto-spectate-new-joins: true
 compass:
   update-interval-ticks: 10
-  dimension-mode: LAST_KNOWN
   item:
     name: '<light_purple>Hunter Compass'
     lore: []
-kit:
-  apply-on-start: true
-# Inventory control: how hunters' inventories are handled on death.
-# none  — full vanilla drop (default)
-# kit   — drop everything, but the active kit is restored on respawn
-# keep  — keep full inventory across death
-inventory-control:
-  # When the runner first enters the End, the inventory control mode
-  # is replaced with this value. Set to the same value as your session
-  # default if you do not want the End to behave differently.
-  end-mode: NONE
 end-portal-respawn:
   enabled: true
   overworld-radius: 64.0
@@ -57,49 +41,3 @@ rollback:
   # Rollback snapshots are separate from AAR/report path samples.
   # Raising this reduces inventory-clone churn without changing report fidelity.
   sample-interval-ticks: 100
-deathstreaks:
-  enabled: true
-  # What to do when a deathstreak armor grant matches a slot the hunter already has filled.
-  # skip         — do not give the armor piece anywhere else; keeps inventories tidy
-  # give_or_drop — try to add the armor piece to inventory, or drop it if full
-  occupied-armor-mode: SKIP
-  # How deaths are attributed to the runner for streak counting.
-  # uuid_strict    — death attribution UUID must match runner UUID (default, most reliable)
-  # message_strict — death message text must contain the runner's name
-  # either         — either condition is sufficient
-  attribution-mode: UUID_STRICT
-  tiers:
-    # Tier 1: full iron kit after 3 runner-attributed deaths.
-    - deaths: 3
-      saturation:
-        food: 20
-        saturation: 6.0
-      potion-effects: []
-      items:
-        - material: IRON_HELMET
-          amount: 1
-        - material: IRON_CHESTPLATE
-          amount: 1
-        - material: IRON_LEGGINGS
-          amount: 1
-        - material: IRON_BOOTS
-          amount: 1
-        - material: IRON_SWORD
-          amount: 1
-        - material: IRON_AXE
-          amount: 1
-        - material: IRON_PICKAXE
-          amount: 1
-    # Tier 2: intentionally weaker stone tools after 6 runner-attributed deaths.
-    - deaths: 6
-      saturation:
-        food: 20
-        saturation: 5.0
-      potion-effects: []
-      items:
-        - material: STONE_SWORD
-          amount: 1
-        - material: STONE_AXE
-          amount: 1
-        - material: STONE_PICKAXE
-          amount: 1

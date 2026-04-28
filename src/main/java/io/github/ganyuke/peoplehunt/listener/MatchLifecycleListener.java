@@ -2,6 +2,7 @@ package io.github.ganyuke.peoplehunt.listener;
 
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakOccupiedArmorMode;
+import io.github.ganyuke.peoplehunt.config.SessionConfig;
 import io.github.ganyuke.peoplehunt.config.PeopleHuntConfig.DeathstreakTier;
 import io.github.ganyuke.peoplehunt.game.compass.CompassService;
 import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
@@ -86,7 +87,7 @@ public class MatchLifecycleListener implements Listener {
                 // Role restoration is deferred one tick so Bukkit has finished constructing the
                 // player's join state before the plugin overwrites game mode or inventory items.
                 if (role == Role.RUNNER || role == Role.HUNTER) player.setGameMode(GameMode.SURVIVAL);
-                else if (config.autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
+                else if (matchManager.getSessionConfig().autoSpectateNewJoins()) player.setGameMode(GameMode.SPECTATOR);
 
                 if (role == Role.HUNTER) compassService.giveCompass(List.of(player));
                 tickService.captureImmediateSample(player);
@@ -99,7 +100,7 @@ public class MatchLifecycleListener implements Listener {
         session.lifeIndex.put(uuid, 1);
         reportService.registerParticipant(uuid, player.getName(), Role.SPECTATOR.name(), true, true);
         reportService.recordTimeline(uuid, player.getName(), "participant", "joined as spectator");
-        if (config.autoSpectateNewJoins()) {
+        if (matchManager.getSessionConfig().autoSpectateNewJoins()) {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 player.setGameMode(GameMode.SPECTATOR);
                 tickService.captureImmediateSample(player);
@@ -137,7 +138,7 @@ public class MatchLifecycleListener implements Listener {
                 maybeOfferEndPortalTeleport(session, player);
             } else if (role == Role.RUNNER) {
                 player.setGameMode(GameMode.SURVIVAL);
-            } else if (config.autoSpectateNewJoins()) {
+            } else if (matchManager.getSessionConfig().autoSpectateNewJoins()) {
                 player.setGameMode(GameMode.SPECTATOR);
             }
             tickService.captureImmediateSample(player);
@@ -216,7 +217,7 @@ public class MatchLifecycleListener implements Listener {
         }
         boolean byUuid = attribution != null && session.runnerUuid.equals(attribution.playerUuid());
 
-        return switch (config.deathstreakAttributionMode()) {
+        return switch (matchManager.getSessionConfig().deathstreakAttributionMode()) {
             case UUID_STRICT    -> byUuid;
             case MESSAGE_STRICT -> deathMessageContainsRunner(session, event);
             case EITHER         -> byUuid || deathMessageContainsRunner(session, event);
@@ -267,7 +268,7 @@ public class MatchLifecycleListener implements Listener {
      * </ul>
      */
     private void applyDeathstreakKit(MatchSession session, Player player) {
-        if (!config.deathstreaksEnabled()) return;
+        if (!matchManager.getSessionConfig().deathstreaksEnabled()) return;
         DeathstreakTier tier = activeDeathstreakTier(session, player.getUniqueId());
         if (tier == null) return;
 
@@ -287,7 +288,7 @@ public class MatchLifecycleListener implements Listener {
                 continue;
             }
             if (armorResult == ArmorGrantResult.SLOT_OCCUPIED
-                    && config.deathstreakOccupiedArmorMode() == DeathstreakOccupiedArmorMode.SKIP) {
+                    && matchManager.getSessionConfig().deathstreakOccupiedArmorMode() == DeathstreakOccupiedArmorMode.SKIP) {
                 continue;
             }
 
@@ -344,7 +345,7 @@ public class MatchLifecycleListener implements Listener {
     private DeathstreakTier activeDeathstreakTier(MatchSession session, UUID hunterUuid) {
         MatchSession.DeathstreakState state = session.deathstreaks.get(hunterUuid);
         if (state == null) return null;
-        return config.deathstreakTiers().stream()
+        return matchManager.getSessionConfig().deathstreakTiers().stream()
                 .filter(tier -> state.streakDeaths >= tier.deaths())
                 .max(Comparator.comparingInt(DeathstreakTier::deaths))
                 .orElse(null);

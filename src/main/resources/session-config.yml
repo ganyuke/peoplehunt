@@ -1,0 +1,61 @@
+# PeopleHunt session configuration.
+# These settings apply to each match session.
+# Edit this file directly, then run /ph settings reload to apply changes live.
+# Run /ph settings save to write the current live session state to this file.
+
+match:
+  # Whether to keep hunters at full food during the prime (headstart) window.
+  prime:
+    keep-players-full: ${match.prime.keep-players-full}
+
+  # Automatically place players who join mid-match into spectator mode.
+  auto-spectate-new-joins: ${match.auto-spectate-new-joins}
+
+  # How often (in minutes) to announce elapsed match time.
+  # Set to 0 to disable announcements.
+  elapsed-announcement-minutes: ${match.elapsed-announcement-minutes}
+
+kit:
+  # Whether to apply the selected kit automatically when the match starts.
+  apply-on-start: ${kit.apply-on-start}
+
+  # The identifier of the kit to apply on start. null = no kit.
+  selected: ${kit.selected}
+
+# Inventory control: how hunters' inventories are handled on death.
+# NONE     - full vanilla drop
+# KIT      - drop everything; active kit is restored on respawn
+# KEEP     - keep full inventory across death
+inventory-control:
+  mode: ${inventory-control.mode}
+
+  # When the runner first enters the End, inventory control is replaced with
+  # this value. Set to the same value as `mode` for no End-specific behaviour.
+  end-mode: ${inventory-control.end-mode}
+
+compass:
+  # How the hunter compass resolves the runner's position across dimensions.
+  # VANILLA    - standard Minecraft compass behaviour
+  # LAST_KNOWN - tracks the runner's last known position when in another dimension
+  dimension-mode: ${compass.dimension-mode}
+
+deathstreaks:
+  # Whether deathstreak rewards are active.
+  enabled: ${deathstreaks.enabled}
+
+  # How runner-attributed deaths are counted for streak purposes.
+  # UUID_STRICT    - death attribution UUID must match the runner's UUID (recommended)
+  # MESSAGE_STRICT - death message text must contain the runner's name
+  # EITHER         - either condition is sufficient
+  attribution-mode: ${deathstreaks.attribution-mode}
+
+  # What to do when a deathstreak armor grant targets a slot the hunter already has filled.
+  # SKIP         - do not give the armor piece; keeps inventories tidy
+  # GIVE_OR_DROP - try to add to inventory, drop if full
+  occupied-armor-mode: ${deathstreaks.occupied-armor-mode}
+
+  # Deathstreak reward tiers. Each tier fires once when a hunter reaches
+  # the specified number of runner-attributed deaths.
+  # Tiers are evaluated in order; only the first matching tier fires per death.
+  tiers:
+${deathstreaks.tiers}

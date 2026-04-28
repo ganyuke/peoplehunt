@@ -1,7 +1,5 @@
 package io.github.ganyuke.peoplehunt.config;
 
-import io.github.ganyuke.peoplehunt.game.compass.CompassDimensionMode;
-import io.github.ganyuke.peoplehunt.game.KeepInventoryMode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -13,15 +11,10 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.potion.PotionEffectType;
 
 public final class PeopleHuntConfig {
-    private final int elapsedAnnouncementMinutes;
-    private final boolean primeKeepPlayersFull;
     private final long playerPathSampleIntervalTicks;
-    private final boolean autoSpectateNewJoins;
     private final long compassUpdateIntervalTicks;
-    private final CompassDimensionMode compassDimensionMode;
     private final String compassName;
     private final List<String> compassLore;
-    private final boolean applyKitOnStart;
     private final boolean endPortalRespawnEnabled;
     private final double endPortalRespawnRadius;
     private final boolean captureAdvancements;
@@ -40,22 +33,12 @@ public final class PeopleHuntConfig {
     private final long lavaAttributionWindowMillis;
     private final double explosionAttributionRadius;
     private final long explosionAttributionWindowMillis;
-    private final boolean deathstreaksEnabled;
-    private final DeathstreakAttributionMode deathstreakAttributionMode;
-    private final DeathstreakOccupiedArmorMode deathstreakOccupiedArmorMode;
-    private final List<DeathstreakTier> deathstreakTiers;
-    private final KeepInventoryMode endInventoryControlMode;
 
     private PeopleHuntConfig(
-            int elapsedAnnouncementMinutes,
-            boolean primeKeepPlayersFull,
             long playerPathSampleIntervalTicks,
-            boolean autoSpectateNewJoins,
             long compassUpdateIntervalTicks,
-            CompassDimensionMode compassDimensionMode,
             String compassName,
             List<String> compassLore,
-            boolean applyKitOnStart,
             boolean endPortalRespawnEnabled,
             double endPortalRespawnRadius,
             boolean captureAdvancements,
@@ -73,22 +56,12 @@ public final class PeopleHuntConfig {
             int lavaAttributionVerticalRadius,
             long lavaAttributionWindowMillis,
             double explosionAttributionRadius,
-            long explosionAttributionWindowMillis,
-            boolean deathstreaksEnabled,
-            DeathstreakAttributionMode deathstreakAttributionMode,
-            DeathstreakOccupiedArmorMode deathstreakOccupiedArmorMode,
-            List<DeathstreakTier> deathstreakTiers,
-            KeepInventoryMode endInventoryControlMode
+            long explosionAttributionWindowMillis
     ) {
-        this.elapsedAnnouncementMinutes = elapsedAnnouncementMinutes;
-        this.primeKeepPlayersFull = primeKeepPlayersFull;
         this.playerPathSampleIntervalTicks = playerPathSampleIntervalTicks;
-        this.autoSpectateNewJoins = autoSpectateNewJoins;
         this.compassUpdateIntervalTicks = compassUpdateIntervalTicks;
-        this.compassDimensionMode = compassDimensionMode;
         this.compassName = compassName;
         this.compassLore = List.copyOf(compassLore);
-        this.applyKitOnStart = applyKitOnStart;
         this.endPortalRespawnEnabled = endPortalRespawnEnabled;
         this.endPortalRespawnRadius = endPortalRespawnRadius;
         this.captureAdvancements = captureAdvancements;
@@ -107,35 +80,14 @@ public final class PeopleHuntConfig {
         this.lavaAttributionWindowMillis = lavaAttributionWindowMillis;
         this.explosionAttributionRadius = explosionAttributionRadius;
         this.explosionAttributionWindowMillis = explosionAttributionWindowMillis;
-        this.deathstreaksEnabled = deathstreaksEnabled;
-        this.deathstreakAttributionMode = deathstreakAttributionMode;
-        this.deathstreakOccupiedArmorMode = deathstreakOccupiedArmorMode;
-        this.deathstreakTiers = List.copyOf(deathstreakTiers);
-        this.endInventoryControlMode = endInventoryControlMode;
     }
 
     public static PeopleHuntConfig from(FileConfiguration config) {
-        List<DeathstreakTier> tiers = new ArrayList<>();
-        List<?> tierRaw = config.getList("deathstreaks.tiers", Collections.emptyList());
-        for (Object element : tierRaw) {
-            if (element instanceof java.util.Map<?, ?> map) {
-                tiers.add(DeathstreakTier.fromMap(map));
-            } else if (element instanceof ConfigurationSection section) {
-                // Bukkit normally exposes list entries as maps for YAML block sequences, but this
-                // keeps the parser tolerant of alternate configuration providers.
-                tiers.add(DeathstreakTier.from(section));
-            }
-        }
         return new PeopleHuntConfig(
-                config.getInt("match.elapsed-announcement-minutes", 30),
-                config.getBoolean("match.prime.keep-players-full", true),
                 config.getLong("match.player-path-sample-interval-ticks", 20L),
-                config.getBoolean("match.auto-spectate-new-joins", true),
                 config.getLong("compass.update-interval-ticks", 10L),
-                CompassDimensionMode.valueOf(config.getString("compass.dimension-mode", "LAST_KNOWN").toUpperCase()),
                 config.getString("compass.item.name", "<light_purple>Hunter Compass"),
                 config.getStringList("compass.item.lore"),
-                config.getBoolean("kit.apply-on-start", true),
                 config.getBoolean("end-portal-respawn.enabled", true),
                 config.getDouble("end-portal-respawn.overworld-radius", 64.0),
                 config.getBoolean("reporting.capture-advancements", true),
@@ -153,62 +105,16 @@ public final class PeopleHuntConfig {
                 config.getInt("attribution.lava.vertical-radius", 3),
                 config.getLong("attribution.lava.window-millis", 30000L),
                 config.getDouble("attribution.explosion.radius", 8.0),
-                config.getLong("attribution.explosion.window-millis", 5000L),
-                config.getBoolean("deathstreaks.enabled", true),
-                parseAttributionMode(config.getString("deathstreaks.attribution-mode", "UUID_STRICT")),
-                parseOccupiedArmorMode(config.getString("deathstreaks.occupied-armor-mode", "SKIP")),
-                tiers,
-                parseInventoryControlMode(config.getString("inventory-control.end-mode", "NONE"))
+                config.getLong("attribution.explosion.window-millis", 5000L)
         );
-    }
-
-    private static DeathstreakAttributionMode parseAttributionMode(String raw) {
-        try {
-            return DeathstreakAttributionMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            return DeathstreakAttributionMode.UUID_STRICT;
-        }
-    }
-
-    private static DeathstreakOccupiedArmorMode parseOccupiedArmorMode(String raw) {
-        try {
-            return DeathstreakOccupiedArmorMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            return DeathstreakOccupiedArmorMode.SKIP;
-        }
-    }
-
-    private static KeepInventoryMode parseInventoryControlMode(String raw) {
-        try {
-            KeepInventoryMode mode = KeepInventoryMode.valueOf(raw.toUpperCase(java.util.Locale.ROOT));
-            return mode == KeepInventoryMode.INHERIT ? KeepInventoryMode.NONE : mode;
-        } catch (IllegalArgumentException e) {
-            return KeepInventoryMode.NONE;
-        }
-    }
-
-    public int elapsedAnnouncementMinutes() {
-        return elapsedAnnouncementMinutes;
-    }
-
-    public boolean primeKeepPlayersFull() {
-        return primeKeepPlayersFull;
     }
 
     public long playerPathSampleIntervalTicks() {
         return playerPathSampleIntervalTicks;
     }
 
-    public boolean autoSpectateNewJoins() {
-        return autoSpectateNewJoins;
-    }
-
     public long compassUpdateIntervalTicks() {
         return compassUpdateIntervalTicks;
-    }
-
-    public CompassDimensionMode compassDimensionMode() {
-        return compassDimensionMode;
     }
 
     public String compassName() {
@@ -217,10 +123,6 @@ public final class PeopleHuntConfig {
 
     public List<String> compassLore() {
         return compassLore;
-    }
-
-    public boolean applyKitOnStart() {
-        return applyKitOnStart;
     }
 
     public boolean endPortalRespawnEnabled() {
@@ -294,26 +196,6 @@ public final class PeopleHuntConfig {
 
     public long explosionAttributionWindowMillis() {
         return explosionAttributionWindowMillis;
-    }
-
-    public boolean deathstreaksEnabled() {
-        return deathstreaksEnabled;
-    }
-
-    public DeathstreakAttributionMode deathstreakAttributionMode() {
-        return deathstreakAttributionMode;
-    }
-
-    public DeathstreakOccupiedArmorMode deathstreakOccupiedArmorMode() {
-        return deathstreakOccupiedArmorMode;
-    }
-
-    public List<DeathstreakTier> deathstreakTiers() {
-        return deathstreakTiers;
-    }
-
-    public KeepInventoryMode endInventoryControlMode() {
-        return endInventoryControlMode;
     }
 
     /**

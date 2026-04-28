@@ -423,7 +423,7 @@ public final class GameplayListener implements Listener {
             case THE_END -> {
                 recordMilestoneIfAbsent(session, event.getPlayer().getUniqueId(), event.getPlayer().getName(), "first_end", "Entered the End");
                 if (session.runnerUuid.equals(event.getPlayer().getUniqueId())) {
-                    matchManager.activateEndInventoryControl(config.endInventoryControlMode());
+                    matchManager.activateEndInventoryControl(matchManager.getSessionConfig().endInventoryControlMode());
                 }
             }
             default -> {

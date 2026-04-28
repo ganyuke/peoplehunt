@@ -5,7 +5,6 @@ import io.github.ganyuke.peoplehunt.game.Role;
 import io.github.ganyuke.peoplehunt.report.ReportService;
 import io.github.ganyuke.peoplehunt.util.PrettyNames;
 import io.github.ganyuke.peoplehunt.util.SnapshotUtil;
-import io.github.ganyuke.peoplehunt.util.Text;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.ArrayList;
@@ -39,7 +38,6 @@ public class MatchTickService {
 
     private BukkitTask pathTask;
     private BukkitTask rollbackTask;
-    private BukkitTask elapsedTask;
     private BukkitTask scanTask;
     private BukkitTask primeTask;
 
@@ -59,25 +57,14 @@ public class MatchTickService {
         pathTask = Bukkit.getScheduler().runTaskTimer(plugin, this::recordPathSample, config.playerPathSampleIntervalTicks(), config.playerPathSampleIntervalTicks());
         rollbackTask = Bukkit.getScheduler().runTaskTimer(plugin, this::recordRollbackSample, Math.max(1L, config.rollbackSampleIntervalTicks()), Math.max(1L, config.rollbackSampleIntervalTicks()));
         scanTask = Bukkit.getScheduler().runTaskTimer(plugin, this::scanRuntimeState, 10L, 10L);
-        elapsedTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            MatchSession session = matchManager.getSession();
-            if (session == null) return;
-            long elapsedMinutes = (System.currentTimeMillis() - session.startedAtEpochMillis) / 60000L;
-            if (elapsedMinutes >= session.nextElapsedAnnouncementMinutes) {
-                matchManager.broadcast(Text.mm("<yellow>Manhunt time elapsed: " + elapsedMinutes + " minutes"));
-                session.nextElapsedAnnouncementMinutes += Math.max(1, config.elapsedAnnouncementMinutes());
-            }
-        }, 20L, 20L);
     }
 
     public void stopRuntimeTasks() {
         cancelTask(pathTask);
         cancelTask(rollbackTask);
-        cancelTask(elapsedTask);
         cancelTask(scanTask);
         pathTask = null;
         rollbackTask = null;
-        elapsedTask = null;
         scanTask = null;
     }
 
@@ -85,7 +72,7 @@ public class MatchTickService {
         cancelPrimeTask();
         primeTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             PrimeContext ctx = matchManager.getPrimeContext();
-            if (ctx == null || !ctx.keepPlayersFull()) return;
+            if (ctx == null || !ctx.keepPlayersFull(matchManager.getSessionConfig())) return;
             for (UUID uuid : ctx.participantIds()) {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player == null) continue;
