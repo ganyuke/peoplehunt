@@ -109,7 +109,8 @@ a { color: inherit; text-decoration: none; }
 /* ── Shell / grid ───────────────────────────── */
 .shell {
   max-width: 1680px;
-  min-height: 100vh;
+  /* idk why GPT wanted this; it just makes the page look weird when it's tall */
+  /* min-height: 100vh; */
   margin: 0 auto;
   padding: 12px;
   display: grid;
