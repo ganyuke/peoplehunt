@@ -421,6 +421,16 @@ a { color: inherit; text-decoration: none; }
   gap: 4px;
 }
 
+.ribbon-row {
+  display: flex;
+  gap: 4px;
+  padding-bottom: 2px;
+}
+
+.ribbon-row .segment {
+  flex: 1 1 0;
+}
+
 /* Segment / filter / layer / filter-pill buttons */
 .segment,
 .filter-pill,

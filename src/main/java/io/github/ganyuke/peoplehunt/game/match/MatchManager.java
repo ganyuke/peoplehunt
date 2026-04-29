@@ -163,11 +163,32 @@ public final class MatchManager {
      */
     public void activateEndInventoryControl(KeepInventoryMode endMode) {
         if (activeSession == null || activeSession.endInventoryControlActivated) return;
+        KeepInventoryMode resolvedMode = (endMode == null || endMode == KeepInventoryMode.INHERIT)
+                ? KeepInventoryMode.NONE
+                : endMode;
+        KeepInventoryMode previousMode = activeSession.keepInventoryMode;
         activeSession.endInventoryControlActivated = true;
-        activeSession.keepInventoryMode = endMode;
-        reportService.updateSessionSettings(endMode, activeSession.activeKitId);
-        broadcast(Text.mm("<yellow>Runner has entered the End. Inventory control switched to <white>"
-                + endMode.name() + "</white>.</yellow>"));
+        activeSession.keepInventoryMode = resolvedMode;
+        reportService.updateSessionSettings(resolvedMode, activeSession.activeKitId);
+        if (resolvedMode == previousMode) {
+            return;
+        }
+
+        Component message = Text.mm("<yellow>Runner has entered the End. Inventory control switched to <white>"
+                + resolvedMode.name() + "</white>.</yellow>");
+        for (UUID uuid : activeSession.hunterIds) {
+            Player player = Bukkit.getPlayer(uuid);
+            if (player != null) {
+                player.sendMessage(message);
+            }
+        }
+        for (UUID uuid : activeSession.spectatorIds) {
+            Player player = Bukkit.getPlayer(uuid);
+            if (player != null) {
+                player.sendMessage(message);
+            }
+        }
+        Bukkit.getConsoleSender().sendMessage(message);
     }
 
     public String activeKitId() {

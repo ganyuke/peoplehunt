@@ -10,7 +10,6 @@ const ICON_KEYS = Object.keys(MC_ICONS);
 const MOB_COLOR = '#8b6f47';
 const DRAGON_COLOR = '#7c3aed';
 const END_CRYSTAL_COLOR = '#06b6d4';
-const PROJECTILE_MARKER_FADE_MILLIS = 8000;
 const DEFAULT_LAYERS = Object.freeze({
     players: true,
     projectiles: true,
@@ -19,6 +18,13 @@ const DEFAULT_LAYERS = Object.freeze({
     deaths: true,
     damage: true,
     dragon: true
+});
+const DEFAULT_FADE_SETTINGS = Object.freeze({
+    mobDragonTailMillis: 5000,
+    mobDragonFadeMillis: 5000,
+    projectileMarkerFadeMillis: 8000,
+    projectileTrailDelayMillis: 0,
+    projectileTrailFadeMillis: 8000
 });
 
 const THEME_STORAGE_KEY = 'peoplehunt-theme';
@@ -232,6 +238,29 @@ function formatCoord(value) {
 
 function formatPercent(value) {
     return `${Math.round(clamp(value, 0, 1) * 100)}%`;
+}
+
+function ageFadeAlpha(pointOffsetMillis, playheadMillis, holdMillis, fadeMillis) {
+    const ageMillis = playheadMillis - pointOffsetMillis;
+    if (!Number.isFinite(ageMillis) || ageMillis <= 0) return 1;
+    if (holdMillis < 0) return 1;
+    if (ageMillis <= holdMillis) return 1;
+    if (fadeMillis <= 0) return 0;
+    return clamp(1 - ((ageMillis - holdMillis) / fadeMillis), 0, 1);
+}
+
+function postEndFadeAlpha(endedAtOffsetMillis, playheadMillis, delayMillis, fadeMillis) {
+    if (!Number.isFinite(endedAtOffsetMillis) || playheadMillis <= endedAtOffsetMillis) {
+        return 1;
+    }
+    const elapsed = playheadMillis - endedAtOffsetMillis;
+    if (elapsed <= Math.max(0, delayMillis || 0)) {
+        return 1;
+    }
+    if (fadeMillis <= 0) {
+        return 0;
+    }
+    return clamp(1 - ((elapsed - Math.max(0, delayMillis || 0)) / fadeMillis), 0, 1);
 }
 
 
@@ -939,7 +968,7 @@ function buildUnifiedEvents(snapshot) {
             dedupeKey: `mob-death:${mobDeath.offsetMillis}:${mobDeath.entityUuid || mobDeath.entityType}:${mobDeath.cause}:${mobDeath.killerUuid || mobDeath.killerName || mobDeath.killerEntityType || ''}`,
             offsetMillis: mobDeath.offsetMillis,
             kind: 'death',
-            title: `${pretty(mobDeath.entityType)} died`,
+            title: `${mobDeath.entityType === 'ENDER_DRAGON' ? 'ENDER DRAGON' : pretty(mobDeath.entityType)} died`,
             description: `${pretty(mobDeath.cause)}${killerText ? ` · by ${killerText}` : ''}${mobDeath.weapon ? ` · ${pretty(mobDeath.weapon)}` : ''}${mobDeath.targetPlayerName ? ` · tracking ${mobDeath.targetPlayerName}` : ''}`,
             playerUuid: mobDeath.targetPlayerUuid,
             playerName: mobDeath.targetPlayerName,
@@ -1228,6 +1257,7 @@ function App() {
     const [selectedPlayer, setSelectedPlayer] = useState(initialSnapshot?.metadata?.runnerUuid || initialSnapshot?.participants?.[0]?.uuid || null);
     const [selectedWorld, setSelectedWorld] = useState('ALL');
     const [layers, setLayers] = useState(DEFAULT_LAYERS);
+    const [fadeSettings, setFadeSettings] = useState(DEFAULT_FADE_SETTINGS);
     const [selectedEventId, setSelectedEventId] = useState(null);
     const lastFrameTime = useRef(performance.now());
 
@@ -1369,6 +1399,8 @@ function App() {
                 setSpeed=${setSpeed}
                 layers=${layers}
                 setLayers=${setLayers}
+                fadeSettings=${fadeSettings}
+                setFadeSettings=${setFadeSettings}
                 stats=${snapshot.stats}
                 duration=${duration}
             />
@@ -1391,6 +1423,7 @@ function App() {
                 selectedWorld=${selectedWorld}
                 selectedPlayer=${selectedPlayer}
                 layers=${layers}
+                fadeSettings=${fadeSettings}
                 selectedEvent=${selectedEvent}
                 setSelectedEventId=${setSelectedEventId}
                 theme=${theme}
@@ -1450,9 +1483,11 @@ function MatchInfoCard({ meta, duration, timeZoneSelection, activeTimeZoneLabel 
     </section>`;
 }
 
-function PlaybackControlsCard({ snapshot, selectedPlayer, setSelectedPlayer, selectedWorld, setSelectedWorld, time, speed, setSpeed, layers, setLayers, stats, duration }) {
+function PlaybackControlsCard({ snapshot, selectedPlayer, setSelectedPlayer, selectedWorld, setSelectedWorld, time, speed, setSpeed, layers, setLayers, fadeSettings, setFadeSettings, stats, duration }) {
     const worlds = availableWorld(snapshot);
+    const [activeRibbon, setActiveRibbon] = useState('filters');
     const toggleLayer = key => setLayers(current => ({ ...current, [key]: !current[key] }));
+    const updateFadeSetting = (key, value) => setFadeSettings(current => ({ ...current, [key]: Number(value) }));
     return html`<section class="card controls-card">
         <div class="card-header">
             <div class="card-title">Playback controls</div>
@@ -1486,31 +1521,104 @@ function PlaybackControlsCard({ snapshot, selectedPlayer, setSelectedPlayer, sel
             </div>
             <div class="controls-pane">
                 <div class="control-stack">
-                    <div class="control-box">
-                        <div class="label">Dimension</div>
-                        <div class="segment-row">
-                            <button class=${`segment ${selectedWorld === 'ALL' ? 'active' : ''}`} onClick=${() => setSelectedWorld('ALL')}>All</button>
-                            ${worlds.map(world => html`<button class=${`segment ${selectedWorld === world ? 'active' : ''}`} onClick=${() => setSelectedWorld(world)}>${pretty(world)}</button>`)}
-                        </div>
+                    <div class="ribbon-row">
+                        <button class=${`segment ${activeRibbon === 'filters' ? 'active' : ''}`} onClick=${() => setActiveRibbon('filters')}>Filters</button>
+                        <button class=${`segment ${activeRibbon === 'timings' ? 'active' : ''}`} onClick=${() => setActiveRibbon('timings')}>Timings</button>
                     </div>
-                    <div class="control-box">
-                        <div class="label">Speed</div>
-                        <div class="search-row">
-                            <select class="select" value=${speed} onChange=${event => setSpeed(Number(event.target.value))}>
-                                <option value="1">1x</option>
-                                <option value="5">5x</option>
-                                <option value="10">10x</option>
-                                <option value="30">30x</option>
-                                <option value="60">60x</option>
-                            </select>
+                    ${activeRibbon === 'filters' ? html`<${Fragment}>
+                        <div class="control-box">
+                            <div class="label">Dimension</div>
+                            <div class="segment-row">
+                                <button class=${`segment ${selectedWorld === 'ALL' ? 'active' : ''}`} onClick=${() => setSelectedWorld('ALL')}>All</button>
+                                ${worlds.map(world => html`<button class=${`segment ${selectedWorld === world ? 'active' : ''}`} onClick=${() => setSelectedWorld(world)}>${pretty(world)}</button>`)}
+                            </div>
                         </div>
-                    </div>
-                    <div class="control-box">
-                        <div class="label">Map overlays</div>
-                        <div class="layer-row">
-                            ${Object.entries(layers).map(([key, enabled]) => html`<button class=${`layer-pill ${enabled ? 'active' : ''}`} onClick=${() => toggleLayer(key)}>${pretty(key)}</button>`)}
+                        <div class="control-box">
+                            <div class="label">Map overlays</div>
+                            <div class="layer-row">
+                                ${Object.entries(layers).map(([key, enabled]) => html`<button class=${`layer-pill ${enabled ? 'active' : ''}`} onClick=${() => toggleLayer(key)}>${pretty(key)}</button>`)}
+                            </div>
                         </div>
-                    </div>
+                    <//>` : html`<${Fragment}>
+                        <div class="control-box">
+                            <div class="label">Speed</div>
+                            <div class="search-row">
+                                <select class="select" value=${speed} onChange=${event => setSpeed(Number(event.target.value))}>
+                                    <option value="1">1x</option>
+                                    <option value="5">5x</option>
+                                    <option value="10">10x</option>
+                                    <option value="30">30x</option>
+                                    <option value="60">60x</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="control-box">
+                            <div class="label">Fade behavior</div>
+                            <div class="control-stack">
+                                <label>
+                                    <div class="label">Mob / Dragon solid tail</div>
+                                    <div class="search-row">
+                                        <select class="select" value=${fadeSettings.mobDragonTailMillis} onChange=${event => updateFadeSetting('mobDragonTailMillis', event.target.value)}>
+                                            <option value="-1">Infinite</option>
+                                            <option value="2000">2s</option>
+                                            <option value="5000">5s</option>
+                                            <option value="10000">10s</option>
+                                            <option value="15000">15s</option>
+                                        </select>
+                                    </div>
+                                </label>
+                                <label>
+                                    <div class="label">Mob / Dragon fade window</div>
+                                    <div class="search-row">
+                                        <select class="select" value=${fadeSettings.mobDragonFadeMillis} onChange=${event => updateFadeSetting('mobDragonFadeMillis', event.target.value)}>
+                                            <option value="0">Off</option>
+                                            <option value="2000">2s</option>
+                                            <option value="5000">5s</option>
+                                            <option value="10000">10s</option>
+                                        </select>
+                                    </div>
+                                </label>
+                                <label>
+                                    <div class="label">Projectile marker fade</div>
+                                    <div class="search-row">
+                                        <select class="select" value=${fadeSettings.projectileMarkerFadeMillis} onChange=${event => updateFadeSetting('projectileMarkerFadeMillis', event.target.value)}>
+                                            <option value="0">Off</option>
+                                            <option value="1000">1s</option>
+                                            <option value="2000">2s</option>
+                                            <option value="5000">5s</option>
+                                            <option value="8000">8s</option>
+                                            <option value="12000">12s</option>
+                                        </select>
+                                    </div>
+                                </label>
+                                <label>
+                                    <div class="label">Projectile trail delay</div>
+                                    <div class="search-row">
+                                        <select class="select" value=${fadeSettings.projectileTrailDelayMillis} onChange=${event => updateFadeSetting('projectileTrailDelayMillis', event.target.value)}>
+                                            <option value="0">None</option>
+                                            <option value="1000">1s</option>
+                                            <option value="2000">2s</option>
+                                            <option value="5000">5s</option>
+                                            <option value="8000">8s</option>
+                                        </select>
+                                    </div>
+                                </label>
+                                <label>
+                                    <div class="label">Projectile trail fade</div>
+                                    <div class="search-row">
+                                        <select class="select" value=${fadeSettings.projectileTrailFadeMillis} onChange=${event => updateFadeSetting('projectileTrailFadeMillis', event.target.value)}>
+                                            <option value="0">Off</option>
+                                            <option value="1000">1s</option>
+                                            <option value="2000">2s</option>
+                                            <option value="5000">5s</option>
+                                            <option value="8000">8s</option>
+                                            <option value="12000">12s</option>
+                                        </select>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    <//>`}
                 </div>
             </div>
         </div>
@@ -1574,7 +1682,7 @@ function ScrubberCard({ time, duration, onSeek, playing, setPlaying, togglePlayb
     </section>`;
 }
 
-function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, layers, selectedEvent, setSelectedEventId, theme }) {
+function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, layers, fadeSettings, selectedEvent, setSelectedEventId, theme }) {
     const canvasRef = useRef(null);
     const wrapRef = useRef(null);
     const hitRef = useRef([]);
@@ -1641,6 +1749,36 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
             ctx.restore();
         };
 
+        const drawFadingPath = (points, color, widthPx, dashed, alphaForPoint) => {
+            if (!points.length) return;
+            ctx.save();
+            ctx.lineWidth = widthPx;
+            ctx.lineCap = 'square';
+            ctx.lineJoin = 'miter';
+            ctx.setLineDash(dashed || []);
+            let previous = null;
+            points.forEach(point => {
+                if (!previous || point.world !== previous.world || point.isTeleport) {
+                    previous = point;
+                    return;
+                }
+                const alpha = clamp(Math.min(alphaForPoint(previous), alphaForPoint(point)), 0, 1);
+                if (alpha <= 0) {
+                    previous = point;
+                    return;
+                }
+                const start = toCanvas(previous.x, previous.z);
+                const end = toCanvas(point.x, point.z);
+                ctx.strokeStyle = rgba(color, alpha);
+                ctx.beginPath();
+                ctx.moveTo(start.x, start.y);
+                ctx.lineTo(end.x, end.y);
+                ctx.stroke();
+                previous = point;
+            });
+            ctx.restore();
+        };
+
         if (layers.players) {
             const grouped = new Map();
             (snapshot.paths || []).filter(point => point.offsetMillis <= time && accept(point.world)).forEach(point => {
@@ -1676,28 +1814,36 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
                 const points = (projectile.points || []).filter(point => point.offsetMillis <= time && accept(point.world));
                 if (!points.length) return;
                 const color = projectile.shooterUuid ? playerColor(snapshot, projectile.shooterUuid) : (projectile.kind === 'hostile' ? MOB_COLOR : '#475569');
-                drawPath(points, color, 1.75, [2, 4]);
+                const trailFadeAlpha = postEndFadeAlpha(projectile.endedAtOffsetMillis, time, fadeSettings.projectileTrailDelayMillis, fadeSettings.projectileTrailFadeMillis);
+                const markerFadeAlpha = postEndFadeAlpha(projectile.endedAtOffsetMillis, time, 0, fadeSettings.projectileMarkerFadeMillis);
+                if (trailFadeAlpha <= 0 && markerFadeAlpha <= 0) return;
+                if (trailFadeAlpha > 0) {
+                    ctx.save();
+                    ctx.globalAlpha = trailFadeAlpha;
+                    drawPath(points, color, 1.75, [2, 4]);
+                    ctx.restore();
+                }
                 const last = points[points.length - 1];
-                const fadeAlpha = projectile.endedAtOffsetMillis == null
-                    ? 1
-                    : clamp(1 - ((time - projectile.endedAtOffsetMillis) / PROJECTILE_MARKER_FADE_MILLIS), 0, 1);
-                if (fadeAlpha <= 0) return;
                 const target = toCanvas(last.x, last.z);
-                ctx.save();
-                ctx.globalAlpha = fadeAlpha;
-                ctx.fillStyle = color;
-                ctx.fillRect(target.x - 3, target.y - 3, 6, 6);
-                ctx.restore();
-                hits.push({
-                    x: target.x,
-                    y: target.y,
-                    r: 10,
-                    time: projectile.launchedAtOffsetMillis,
-                    eventId: null,
-                    title: `${pretty(projectile.type)} projectile`,
-                    body: `Shooter: ${projectile.shooterName || pretty(projectile.shooterEntityType)}`,
-                    kind: 'projectile'
-                });
+                if (markerFadeAlpha > 0) {
+                    ctx.save();
+                    ctx.globalAlpha = markerFadeAlpha;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(target.x - 3, target.y - 3, 6, 6);
+                    ctx.restore();
+                }
+                if (markerFadeAlpha > 0) {
+                    hits.push({
+                        x: target.x,
+                        y: target.y,
+                        r: 10,
+                        time: projectile.launchedAtOffsetMillis,
+                        eventId: null,
+                        title: `${pretty(projectile.type)} projectile`,
+                        body: `Shooter: ${projectile.shooterName || pretty(projectile.shooterEntityType)}`,
+                        kind: 'projectile'
+                    });
+                }
             });
         }
 
@@ -1708,14 +1854,19 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
                     : time;
                 const points = (mob.points || []).filter(point => point.offsetMillis <= visibleUntil && accept(point.world));
                 if (!points.length) return;
-                drawPath(points, MOB_COLOR, 2, [6, 4]);
-                if (Number.isFinite(mob.endedAtOffsetMillis) && time > mob.endedAtOffsetMillis) {
+                const alphaForPoint = point => ageFadeAlpha(point.offsetMillis, time, fadeSettings.mobDragonTailMillis, fadeSettings.mobDragonFadeMillis);
+                drawFadingPath(points, MOB_COLOR, 2, [6, 4], alphaForPoint);
+                const last = points[points.length - 1];
+                const markerAlpha = alphaForPoint(last);
+                if (markerAlpha <= 0) {
                     return;
                 }
-                const last = points[points.length - 1];
                 const target = toCanvas(last.x, last.z);
+                ctx.save();
+                ctx.globalAlpha = markerAlpha;
                 ctx.fillStyle = MOB_COLOR;
                 ctx.fillRect(target.x - 4, target.y - 4, 8, 8);
+                ctx.restore();
                 hits.push({
                     x: target.x,
                     y: target.y,
@@ -1810,20 +1961,27 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
         if (layers.dragon) {
             const dragonPoints = (snapshot.dragon || []).filter(sample => sample.offsetMillis <= time && accept(sample.world));
             if (dragonPoints.length) {
-                drawPath(dragonPoints, DRAGON_COLOR, 2, [10, 6]);
+                const alphaForPoint = point => ageFadeAlpha(point.offsetMillis, time, fadeSettings.mobDragonTailMillis, fadeSettings.mobDragonFadeMillis);
+                drawFadingPath(dragonPoints, DRAGON_COLOR, 2, [10, 6], alphaForPoint);
                 const last = dragonPoints[dragonPoints.length - 1];
-                const target = toCanvas(last.x, last.z);
-                ctx.fillStyle = DRAGON_COLOR;
-                ctx.fillRect(target.x - 5, target.y - 5, 10, 10);
-                hits.push({
-                    x: target.x,
-                    y: target.y,
-                    r: 12,
-                    time: last.offsetMillis,
-                    title: 'Ender Dragon',
-                    body: `${last.health.toFixed(1)} / ${last.maxHealth.toFixed(1)} hp`,
-                    kind: 'dragon'
-                });
+                const markerAlpha = alphaForPoint(last);
+                if (markerAlpha > 0) {
+                    const target = toCanvas(last.x, last.z);
+                    ctx.save();
+                    ctx.globalAlpha = markerAlpha;
+                    ctx.fillStyle = DRAGON_COLOR;
+                    ctx.fillRect(target.x - 5, target.y - 5, 10, 10);
+                    ctx.restore();
+                    hits.push({
+                        x: target.x,
+                        y: target.y,
+                        r: 12,
+                        time: last.offsetMillis,
+                        title: 'Ender Dragon',
+                        body: `${last.health.toFixed(1)} / ${last.maxHealth.toFixed(1)} hp`,
+                        kind: 'dragon'
+                    });
+                }
             }
             (snapshot.endCrystals || []).filter(crystal => crystal.spawnedAtOffsetMillis <= time && (!Number.isFinite(crystal.destroyedAtOffsetMillis) || crystal.destroyedAtOffsetMillis >= time) && accept(crystal.world)).forEach(crystal => {
                 const target = toCanvas(crystal.x, crystal.z);
@@ -1858,7 +2016,7 @@ function MapWidget({ snapshot, time, setTime, selectedWorld, selectedPlayer, lay
         }
 
         hitRef.current = hits;
-    }, [snapshot, time, selectedWorld, selectedPlayer, layers, selectedEvent, bounds, box, theme]);
+    }, [snapshot, time, selectedWorld, selectedPlayer, layers, fadeSettings, selectedEvent, bounds, box, theme]);
 
     const onMouseMove = event => {
         const rect = event.currentTarget.getBoundingClientRect();

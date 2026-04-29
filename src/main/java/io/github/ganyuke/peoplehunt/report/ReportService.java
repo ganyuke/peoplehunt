@@ -712,10 +712,10 @@ public final class ReportService {
                 LocationUtil.toRecord(victimLocation)
         ));
         MutableStats attackerStats = currentSession.stats.get(attackerUuid);
-        if (attackerStats != null) {
+        MutableStats victimStats = currentSession.stats.get(victimUuid);
+        if (attackerStats != null && victimStats != null) {
             attackerStats.playerDamageDealt += damage;
         }
-        MutableStats victimStats = currentSession.stats.get(victimUuid);
         if (victimStats != null) {
             if (attackerUuid != null) {
                 victimStats.playerDamageTaken += damage;
@@ -885,7 +885,9 @@ public final class ReportService {
                 LocationUtil.toRecord(location)
         ));
 
-        String victimText = PrettyNames.enumName(entityType == null ? "UNKNOWN" : entityType);
+        String victimText = "ENDER_DRAGON".equals(entityType)
+                ? "ENDER DRAGON"
+                : PrettyNames.enumName(entityType == null ? "UNKNOWN" : entityType);
         String killerText = killerName;
         if (killerText == null || killerText.isBlank()) {
             killerText = killerEntityType == null || killerEntityType.isBlank()
@@ -947,9 +949,10 @@ public final class ReportService {
         long endedAt = System.currentTimeMillis();
         List<PathPoint> finalBatch = drainPendingPaths(session);
         ViewerSnapshot snapshot = buildFrozenSnapshot(session, endedAt, outcome);
+        long resolvedEndedAt = snapshot.metadata().endedAtEpochMillis();
         writeExecutor.execute(() -> {
             try {
-                FinishResult result = finalizeSessionOnWriteThread(session, outcome, endedAt, snapshot, finalBatch);
+                FinishResult result = finalizeSessionOnWriteThread(session, outcome, resolvedEndedAt, snapshot, finalBatch);
                 runOnMainThread(() -> {
                     if (currentSession == session) {
                         currentSession = null;
@@ -978,7 +981,8 @@ public final class ReportService {
         long endedAt = System.currentTimeMillis();
         List<PathPoint> finalBatch = drainPendingPaths(session);
         ViewerSnapshot snapshot = buildFrozenSnapshot(session, endedAt, outcome);
-        Future<FinishResult> future = writeExecutor.submit(() -> finalizeSessionOnWriteThread(session, outcome, endedAt, snapshot, finalBatch));
+        long resolvedEndedAt = snapshot.metadata().endedAtEpochMillis();
+        Future<FinishResult> future = writeExecutor.submit(() -> finalizeSessionOnWriteThread(session, outcome, resolvedEndedAt, snapshot, finalBatch));
         try {
             FinishResult result = future.get();
             if (currentSession == session) {
@@ -1000,13 +1004,19 @@ public final class ReportService {
     }
 
     private ViewerSnapshot buildFrozenSnapshot(CurrentSession session, long endedAt, MatchOutcome outcome) {
+        long nominalOffsetMillis = Math.max(0L, endedAt - session.startedAtEpochMillis);
+        List<TimelineRecord> frozenTimeline = appendConclusionTimeline(session, outcome, nominalOffsetMillis);
+        long resolvedOffsetMillis = frozenTimeline.isEmpty()
+                ? nominalOffsetMillis
+                : frozenTimeline.get(frozenTimeline.size() - 1).offsetMillis();
+        long resolvedEndedAt = session.startedAtEpochMillis + resolvedOffsetMillis;
         return new ViewerSnapshot(
                 new SessionMetadata(
                         session.reportId,
                         session.runnerUuid,
                         session.runnerName,
                         session.startedAtEpochMillis,
-                        endedAt,
+                        resolvedEndedAt,
                         outcome.name(),
                         session.keepInventoryMode.name(),
                         session.activeKitId
@@ -1028,8 +1038,85 @@ public final class ReportService {
                 List.copyOf(session.effects),
                 List.copyOf(session.totems),
                 List.copyOf(session.blocks),
-                List.copyOf(session.timeline)
+                frozenTimeline
         );
+    }
+
+    private List<TimelineRecord> appendConclusionTimeline(CurrentSession session, MatchOutcome outcome, long nominalOffsetMillis) {
+        List<TimelineRecord> timeline = new ArrayList<>(session.timeline);
+        long lastOffsetMillis = latestRecordedOffset(session);
+        long conclusionOffsetMillis = Math.max(nominalOffsetMillis, lastOffsetMillis + 1L);
+        timeline.add(new TimelineRecord(
+                conclusionOffsetMillis,
+                null,
+                null,
+                "match",
+                switch (outcome) {
+                    case RUNNER_VICTORY -> "Match concluded with runner victory";
+                    case HUNTER_VICTORY -> "Match concluded with hunter victory";
+                    case INCONCLUSIVE -> "Match stopped";
+                },
+                outcome.name(),
+                switch (outcome) {
+                    case RUNNER_VICTORY -> "#16a34a";
+                    case HUNTER_VICTORY -> "#ef4444";
+                    case INCONCLUSIVE -> "#94a3b8";
+                }
+        ));
+        return List.copyOf(timeline);
+    }
+
+    private long latestRecordedOffset(CurrentSession session) {
+        long maxOffsetMillis = -1L;
+        for (TimelineRecord record : session.timeline) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (DamageRecord record : session.damage) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (DeathRecord record : session.deaths) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (MilestoneRecord record : session.milestones) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (ChatRecord record : session.chat) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (MobDeathRecord record : session.mobDeaths) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (MapMarker record : session.markers) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (DragonSample record : session.dragon) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (FoodRecord record : session.food) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (EffectRecord record : session.effects) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (TotemRecord record : session.totems) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (BlockRecord record : session.blocks) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.offsetMillis());
+        }
+        for (TrackedProjectile record : session.projectiles.values()) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.launchedAtOffsetMillis);
+            if (record.endedAtOffsetMillis != null) {
+                maxOffsetMillis = Math.max(maxOffsetMillis, record.endedAtOffsetMillis);
+            }
+        }
+        for (MutableCrystal record : session.endCrystals.values()) {
+            maxOffsetMillis = Math.max(maxOffsetMillis, record.spawnedAtOffsetMillis);
+            if (record.destroyedAtOffsetMillis != null) {
+                maxOffsetMillis = Math.max(maxOffsetMillis, record.destroyedAtOffsetMillis);
+            }
+        }
+        return maxOffsetMillis;
     }
 
     private FinishResult finalizeSessionOnWriteThread(CurrentSession session, MatchOutcome outcome, long endedAt, ViewerSnapshot snapshot, List<PathPoint> finalBatch) throws IOException {

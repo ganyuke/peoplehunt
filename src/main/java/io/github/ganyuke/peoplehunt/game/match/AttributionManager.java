@@ -148,7 +148,7 @@ public final class AttributionManager {
     public MatchSession.Attribution resolveAndStore(EntityDamageByEntityEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !(event.getEntity() instanceof Player victim)) return null;
-        MatchSession.Attribution attribution = resolveEntityAttribution(session, event.getDamager());
+        MatchSession.Attribution attribution = resolveEntityDamage(event);
         if (attribution != null) {
             session.recentVictimAttribution.put(victim.getUniqueId(), attribution);
         }
@@ -158,11 +158,27 @@ public final class AttributionManager {
     public MatchSession.Attribution resolveAndStore(EntityDamageByBlockEvent event) {
         MatchSession session = matchManager.getSession();
         if (session == null || !(event.getEntity() instanceof Player victim)) return null;
-        MatchSession.Attribution attribution = resolveBlockAttribution(session, event.getDamager(), event.getCause(), victim.getLocation());
+        MatchSession.Attribution attribution = resolveBlockDamage(event);
         if (attribution != null) {
             session.recentVictimAttribution.put(victim.getUniqueId(), attribution);
         }
         return attribution;
+    }
+
+    public MatchSession.Attribution resolveEntityDamage(EntityDamageByEntityEvent event) {
+        MatchSession session = matchManager.getSession();
+        if (session == null || event == null) {
+            return null;
+        }
+        return resolveEntityAttribution(session, event.getDamager());
+    }
+
+    public MatchSession.Attribution resolveBlockDamage(EntityDamageByBlockEvent event) {
+        MatchSession session = matchManager.getSession();
+        if (session == null || event == null || event.getEntity() == null) {
+            return null;
+        }
+        return resolveBlockAttribution(session, event.getDamager(), event.getCause(), event.getEntity().getLocation());
     }
 
     public MatchSession.Attribution resolveGenericDamage(Player victim) {
@@ -174,16 +190,27 @@ public final class AttributionManager {
         MatchSession session = matchManager.getSession();
         if (session == null) return null;
         MatchSession.Attribution attribution = session.recentVictimAttribution.get(victim.getUniqueId());
-        if (attribution == null && isLavaLike(cause)) {
-            attribution = resolveLavaAttribution(session, victim.getLocation());
-        }
         if (attribution == null) {
-            attribution = resolveExplosionAttribution(session, victim.getLocation());
+            attribution = resolveGenericDamage(victim.getLocation(), cause);
         }
         if (attribution != null) {
             session.recentVictimAttribution.put(victim.getUniqueId(), attribution);
         }
         return attribution;
+    }
+
+    public MatchSession.Attribution resolveGenericDamage(Location victimLocation, EntityDamageEvent.DamageCause cause) {
+        MatchSession session = matchManager.getSession();
+        if (session == null) {
+            return null;
+        }
+        if (isLavaLike(cause)) {
+            MatchSession.Attribution lava = resolveLavaAttribution(session, victimLocation);
+            if (lava != null) {
+                return lava;
+            }
+        }
+        return resolveExplosionAttribution(session, victimLocation);
     }
 
     public MatchSession.Attribution consumeRecentVictimAttribution(UUID victimUuid) {

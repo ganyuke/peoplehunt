@@ -27,6 +27,7 @@ import org.bukkit.attribute.Attribute;
 import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.World;
+import org.bukkit.entity.EnderDragon;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -193,7 +194,12 @@ public final class GameplayListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByEntity(EntityDamageByEntityEvent event) {
         MatchSession session = matchManager.getSession();
-        if (session == null || !(event.getEntity() instanceof Player victim) || !matchManager.isParticipant(victim.getUniqueId())) return;
+        if (session == null) return;
+        if (event.getEntity() instanceof EnderDragon dragon) {
+            recordDragonEntityDamage(event, dragon);
+            return;
+        }
+        if (!(event.getEntity() instanceof Player victim) || !matchManager.isParticipant(victim.getUniqueId())) return;
 
         Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution != null) {
@@ -239,7 +245,12 @@ public final class GameplayListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamageByBlock(EntityDamageByBlockEvent event) {
         MatchSession session = matchManager.getSession();
-        if (session == null || !(event.getEntity() instanceof Player victim) || !matchManager.isParticipant(victim.getUniqueId())) return;
+        if (session == null) return;
+        if (event.getEntity() instanceof EnderDragon dragon) {
+            recordDragonBlockDamage(event, dragon);
+            return;
+        }
+        if (!(event.getEntity() instanceof Player victim) || !matchManager.isParticipant(victim.getUniqueId())) return;
 
         Attribution attribution = attributionManager.resolveAndStore(event);
         if (attribution != null) {
@@ -255,6 +266,122 @@ public final class GameplayListener implements Listener {
         double blocked = Math.max(0.0, baseDamage - finalDamage);
         if (blocked <= 0.0) return;
         reportService.recordBlock(victim.getUniqueId(), victim.getName(), attackerName, attackerName, blocked, victim.getLocation(), null);
+    }
+
+    private void recordDragonEntityDamage(EntityDamageByEntityEvent event, EnderDragon dragon) {
+        MatchSession.Attribution attribution = attributionManager.resolveEntityDamage(event);
+        if (attribution != null) {
+            reportService.recordDamage(
+                    attribution.playerUuid(),
+                    attribution.playerName(),
+                    dragon.getUniqueId(),
+                    "Ender Dragon",
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    attribution.weapon(),
+                    attribution.projectileUuid(),
+                    attribution.location(),
+                    dragon.getLocation()
+            );
+        } else {
+            Entity damager = event.getDamager();
+            String attackerEntityType = damager.getType().name();
+            String attackerName = PrettyNames.enumName(attackerEntityType);
+            String weapon = damager instanceof Projectile projectile ? PrettyNames.enumName(projectile.getType().name()) : attackerName;
+            Location attackerLocation = damager.getLocation();
+            UUID attackerEntityUuid = damager.getUniqueId();
+            if (damager instanceof Projectile projectile && projectile.getShooter() instanceof LivingEntity living && !(living instanceof Player)) {
+                attackerEntityType = living.getType().name();
+                attackerName = PrettyNames.enumName(attackerEntityType);
+                attackerLocation = living.getLocation();
+                attackerEntityUuid = living.getUniqueId();
+            }
+            reportService.recordDamage(
+                    null,
+                    attackerEntityUuid,
+                    attackerName,
+                    attackerEntityType,
+                    dragon.getUniqueId(),
+                    "Ender Dragon",
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    weapon,
+                    damager instanceof Projectile projectile ? projectile.getUniqueId() : null,
+                    attackerLocation,
+                    dragon.getLocation()
+            );
+        }
+        captureDragonSampleNextTick(dragon);
+    }
+
+    private void recordDragonBlockDamage(EntityDamageByBlockEvent event, EnderDragon dragon) {
+        MatchSession.Attribution attribution = attributionManager.resolveBlockDamage(event);
+        if (attribution != null) {
+            reportService.recordDamage(
+                    attribution.playerUuid(),
+                    attribution.playerName(),
+                    dragon.getUniqueId(),
+                    "Ender Dragon",
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    attribution.weapon(),
+                    attribution.projectileUuid(),
+                    attribution.location(),
+                    dragon.getLocation()
+            );
+        } else {
+            String sourceName = blockDamageName(event);
+            reportService.recordDamage(
+                    null,
+                    null,
+                    sourceName,
+                    "ENVIRONMENT",
+                    dragon.getUniqueId(),
+                    "Ender Dragon",
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    sourceName,
+                    null,
+                    dragon.getLocation(),
+                    dragon.getLocation()
+            );
+        }
+        captureDragonSampleNextTick(dragon);
+    }
+
+    private void recordDragonGenericDamage(EntityDamageEvent event, EnderDragon dragon) {
+        MatchSession.Attribution attribution = attributionManager.resolveGenericDamage(dragon.getLocation(), event.getCause());
+        if (attribution != null) {
+            reportService.recordDamage(
+                    attribution.playerUuid(),
+                    attribution.playerName(),
+                    dragon.getUniqueId(),
+                    "Ender Dragon",
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    attribution.weapon(),
+                    attribution.projectileUuid(),
+                    attribution.location(),
+                    dragon.getLocation()
+            );
+        } else {
+            String sourceName = PrettyNames.enumName(event.getCause().name());
+            reportService.recordDamage(
+                    null,
+                    null,
+                    sourceName,
+                    "ENVIRONMENT",
+                    dragon.getUniqueId(),
+                    "Ender Dragon",
+                    event.getCause().name(),
+                    event.getFinalDamage(),
+                    sourceName,
+                    null,
+                    dragon.getLocation(),
+                    dragon.getLocation()
+            );
+        }
+        captureDragonSampleNextTick(dragon);
     }
 
     private void recordAttributedDamage(Attribution attribution, Player victim, String cause, double finalDamage) {
@@ -296,6 +423,10 @@ public final class GameplayListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onGenericDamage(EntityDamageEvent event) {
         if (event instanceof EntityDamageByEntityEvent || event instanceof EntityDamageByBlockEvent) return;
+        if (event.getEntity() instanceof EnderDragon dragon && matchManager.hasActiveMatch()) {
+            recordDragonGenericDamage(event, dragon);
+            return;
+        }
         if (!(event.getEntity() instanceof Player victim) || !matchManager.hasActiveMatch() || !matchManager.isParticipant(victim.getUniqueId())) return;
 
         Attribution attribution = attributionManager.resolveGenericDamage(victim, event.getCause());
@@ -380,6 +511,17 @@ public final class GameplayListener implements Listener {
 
     private void captureImmediateSampleNextTick(Player player) {
         runNextTickIfOnline(player, () -> tickService.captureImmediateSample(player));
+    }
+
+    private void captureDragonSampleNextTick(EnderDragon dragon) {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!dragon.isValid() || dragon.isDead() || dragon.getWorld() == null) {
+                return;
+            }
+            var attribute = dragon.getAttribute(Attribute.MAX_HEALTH);
+            double maxHealth = attribute == null ? dragon.getHealth() : attribute.getValue();
+            reportService.recordDragonSample(dragon.getLocation(), (float) dragon.getHealth(), (float) maxHealth);
+        });
     }
 
     private void runNextTickIfOnline(Player player, Runnable action) {

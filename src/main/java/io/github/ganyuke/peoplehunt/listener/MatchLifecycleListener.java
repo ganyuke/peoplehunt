@@ -233,9 +233,56 @@ public class MatchLifecycleListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDragonDeath(EntityDeathEvent event) {
-        if (matchManager.getSession() != null && event.getEntity() instanceof EnderDragon) {
-            matchManager.endRunnerVictory();
+        MatchSession session = matchManager.getSession();
+        if (session == null || !(event.getEntity() instanceof EnderDragon dragon)) {
+            return;
         }
+
+        AttributionManager.DeathAttribution attribution = attributionManager.resolveLivingEntityDeathAttribution(dragon, event.getDamageSource());
+        String cause = dragon.getLastDamageCause() == null ? "UNKNOWN" : dragon.getLastDamageCause().getCause().name();
+        var attribute = dragon.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
+        double maxHealth = attribute == null ? dragon.getHealth() : attribute.getValue();
+        var damageSource = event.getDamageSource();
+        var causingEntity = damageSource == null ? null : damageSource.getCausingEntity();
+        var directEntity = damageSource == null ? null : damageSource.getDirectEntity();
+        boolean directPlayerKill = causingEntity instanceof Player || directEntity instanceof Player;
+        reportService.recordDragonSample(dragon.getLocation(), 0.0f, (float) maxHealth);
+        reportService.recordMobDeath(
+                dragon.getUniqueId(),
+                dragon.getType().name(),
+                null,
+                null,
+                attribution == null ? null : attribution.killerUuid(),
+                attribution == null ? null : attribution.killerName(),
+                attribution == null ? null : attribution.killerEntityType(),
+                cause,
+                attribution == null ? null : attribution.weapon(),
+                dragon.getLocation()
+        );
+        if (directPlayerKill) {
+            Player slayer = causingEntity instanceof Player player ? player : (directEntity instanceof Player player ? player : null);
+            reportService.recordMilestone(
+                    attribution != null && attribution.killerUuid() != null ? attribution.killerUuid() : (slayer == null ? null : slayer.getUniqueId()),
+                    attribution != null && attribution.killerName() != null ? attribution.killerName() : (slayer == null ? null : slayer.getName()),
+                    "dragon_slayer",
+                    "Dragon Slayer",
+                    "minecraft:ender_dragon",
+                    "#7c3aed"
+            );
+        } else {
+            String attributedName = attribution == null || attribution.killerName() == null || attribution.killerName().isBlank()
+                    ? "Environment"
+                    : attribution.killerName();
+            reportService.recordMilestone(
+                    null,
+                    attributedName,
+                    "indirect_slayer",
+                    "Indirect Slayer",
+                    "minecraft:ender_dragon",
+                    "#7c3aed"
+            );
+        }
+        matchManager.endRunnerVictory();
     }
 
     private void maybeOfferEndPortalTeleport(MatchSession session, Player player) {
